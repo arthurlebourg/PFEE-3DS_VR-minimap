@@ -4,6 +4,8 @@ This project is a Three.js template using TypeScript and Vite, configured for We
 
 ## Getting Started
 
+[Examples to get started with XR](https://threejs.org/examples/?q=webxr)
+
 ### 1. Prerequisites
 - **Node.js**: Ensure you have Node.js installed (v20.19.0+ or v22+ recommended).
 - **Network**: Your VR headset and your computer must be on the **same Wi-Fi network**.
@@ -49,3 +51,11 @@ Install the Immersive Web Emulator from meta:
 [https://chromewebstore.google.com/detail/immersive-web-emulator/cgffilbpcibhmcfbgggfhfolhkfbhmik](https://chromewebstore.google.com/detail/immersive-web-emulator/cgffilbpcibhmcfbgggfhfolhkfbhmik)
 
 Open your webpage and then open the developer tools (f12), Look for the WebXR tab at the top.
+
+# Some examples models to use (don't commit them to the git)
+
+[apartment 2 4F～7Ｆ in japan](https://sketchfab.com/3d-models/apartment-2-4f7f-in-japan-2f22bce6d02e4012a784780376dc28be)
+
+[Catari scaffolding model designed with PON CAD](https://sketchfab.com/3d-models/catari-scaffolding-model-designed-with-pon-cad-464ffb914dfd4421a8b58ac2181bf034)
+
+[Plant-3](https://sketchfab.com/3d-models/plant-3-11fa1d82f2394c3aaa2a12329ef8dd2b)
