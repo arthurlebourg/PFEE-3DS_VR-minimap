@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 delete window.XRWebGLBinding;
 
@@ -17,17 +18,33 @@ document.body.appendChild(renderer.domElement);
 
 document.body.appendChild(VRButton.createButton(renderer));
 
-const geometry = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-const material = new THREE.MeshNormalMaterial();
-const cube = new THREE.Mesh(geometry, material);
-cube.position.set(0, 1.5, -2);
-scene.add(cube);
+// ambient lights
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
+hemiLight.position.set(0, 20, 0);
+scene.add(hemiLight);
+const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+dirLight.position.set(3, 10, 10);
+scene.add(dirLight);
+
+// load a glb ressource
+const loader = new GLTFLoader();
+loader.load(
+  '/models/apartment_2_4f7f_in_japan.glb', // file path
+  (gltf) =>
+  {
+    const model = gltf.scene;
+    model.position.set(0, 1.2, -2);
+    model.scale.set(0.01, 0.01, 0.01);
+    scene.add(model);
+    console.log('Model loaded successfully');
+  },
+  // log progress details disabled
+  (xhr) => { /* console.log((xhr.loaded / xhr.total * 100) + '%'); */ },
+  (error) => { console.error('Error loading model:', error); }
+);
 
 renderer.setAnimationLoop(() =>
 {
-  cube.rotation.x += 0.01;
-  cube.rotation.y += 0.01;
-
   renderer.render(scene, camera);
 });
 
