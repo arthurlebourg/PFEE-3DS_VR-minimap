@@ -59,3 +59,47 @@ Open your webpage and then open the developer tools (f12), Look for the WebXR ta
 [Catari scaffolding model designed with PON CAD](https://sketchfab.com/3d-models/catari-scaffolding-model-designed-with-pon-cad-464ffb914dfd4421a8b58ac2181bf034)
 
 [Plant-3](https://sketchfab.com/3d-models/plant-3-11fa1d82f2394c3aaa2a12329ef8dd2b)
+
+
+# Contribute
+
+## Git Rules
+
+### Branching Strategy
+
+- All development work must be based on the  **dev** branch.
+- New features must be created from **dev** and merged back into **dev** through a pull request.
+
+### Branch Naming Convention
+
+Use the following format for branch names:
+
+> <parent-branch>_<feature-name>
+
+Example:
+
+Movement branch from dev
+> dev_movement
+
+joystickXYZ branch from movement
+> movement_joystickXYZ
+
+### Release Process
+
+When preparing a new release:
+1. Ensure **dev** branch up to date
+2. Rebase **dev** onto **main**
+3. Create a version tag following *vX.X.X*
+4. Push tag
+
+Example:
+```shell
+git checkout dev
+git rebase main
+
+git checkout main
+git merge dev --ff-only
+
+git tag -a v1.2.0 -m "v1.2.0"
+git push origin main --follow-tags
+```
