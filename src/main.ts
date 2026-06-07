@@ -1,88 +1,177 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
-import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory.js';
 import { loadGLB } from './glbLoader.js';
 import { createPlayer, updateMovement } from './player.js';
+import {
+    buildSceneMap, saveSceneMap, loadSceneMap,
+    renderMinimap, createVRMinimap,
+    type VRMinimap,
+} from './minimap.js';
+import { createFloorManager, updateFloorManager } from './floorManager.js';
+import { initXrMove, teleportTo } from './xrMove.ts';
 
-//delete window.XRWebGLBinding;
-if ('XRWebGLBinding' in window) {
-  delete window.XRWebGLBinding;
-}
+// Patch XRWebGLBinding bug
+if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
 
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 1.6, 3);
-
+// Renderer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
-
 renderer.xr.enabled = true;
-
+renderer.xr.cameraAutoUpdate = false;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 
-// ambient lights
+// Scene
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
+
 const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
 hemiLight.position.set(0, 20, 0);
 scene.add(hemiLight);
+
 const dirLight = new THREE.DirectionalLight(0xffffff, 2);
 dirLight.position.set(3, 10, 10);
 scene.add(dirLight);
 
-// model
-const model = await loadGLB("/models/apartment_2_4f7f_in_japan.glb");
+// Model
+const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
+const model = await loadGLB(MODEL_PATH);
 scene.add(model);
 
-// player
+// SceneMap
+const loadingEl = document.createElement('div');
+loadingEl.textContent = 'Génération de la minimap…';
+Object.assign(loadingEl.style, {
+    position: 'fixed', bottom: '80px', right: '16px',
+    color: '#fff', fontFamily: 'monospace', fontSize: '12px',
+});
+document.body.appendChild(loadingEl);
+
+let sceneMap = loadSceneMap(MODEL_PATH);
+if (!sceneMap) {
+    console.time('buildSceneMap');
+    sceneMap = buildSceneMap(scene, MODEL_PATH, {
+        gridSize: 0.25,
+        minWalkableArea: 1.0,
+        normalThreshold: 0.7,
+        raycastHeight: 50,
+        clusterTolerance: 0.8,
+    });
+    console.timeEnd('buildSceneMap');
+    saveSceneMap(sceneMap);
+    console.log(
+        `${sceneMap.levels.length} étage(s) :`,
+        sceneMap.levels.map(l => `Floor${l.id} Y=${l.floorY.toFixed(2)}`)
+    );
+}
+loadingEl.remove();
+
+// Player
 const player = createPlayer(camera);
 scene.add(player);
 
-// controller
-const controllerModelFactory = new XRControllerModelFactory();
+// Controllers
+function createControllerVisual(): THREE.Group {
+    const group = new THREE.Group();
+
+    const body = new THREE.Mesh(
+        new THREE.BoxGeometry(0.03, 0.03, 0.1),
+        new THREE.MeshStandardMaterial({ color: 0x222222 })
+    );
+    body.position.set(0, 0, -0.05);
+    group.add(body);
+
+    const ray = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.002, 0.002, 0.5),
+        new THREE.MeshBasicMaterial({ color: 0x88aaff })
+    );
+    ray.rotation.x = Math.PI / 2;
+    ray.position.set(0, 0, -0.3);
+    group.add(ray);
+
+    return group;
+}
 
 for (let i = 0; i < 2; i++) {
-  const controller = renderer.xr.getController(i);
-  player.add(controller);
+    const controller = renderer.xr.getController(i);
+    player.add(controller);
 
-  const grip = renderer.xr.getControllerGrip(i);
-  grip.add(controllerModelFactory.createControllerModel(grip));
-  player.add(grip);
+    const grip = renderer.xr.getControllerGrip(i);
+    grip.add(createControllerVisual());
+    player.add(grip);
 }
 
+// XR movement
+initXrMove(renderer.xr);
 
-function getVRJoystick(): { x: number; y: number } {
-  const session = renderer.xr.getSession();
-  if (!session) return { x: 0, y: 0 };
-
-  for (const source of session.inputSources) {
-    const gp = source.gamepad;
-    if (!gp || gp.axes.length < 4) continue;
-    const x = gp.axes[2]; // joystick gauche horizontal
-    const y = gp.axes[3]; // joystick gauche vertical
-    if (Math.abs(x) > 0.1 || Math.abs(y) > 0.1) return { x, y }; // deadzone
-  }
-  return { x: 0, y: 0 };
-}
-
-const timer = new THREE.Timer();
-
-renderer.setAnimationLoop(() =>
-{
-  timer.update();
-
-  renderer.xr.updateCamera(camera);
-
-  if (renderer.xr.isPresenting) {
-    const joystick = getVRJoystick();
-    updateMovement(player, camera, joystick);
-    renderer.render(scene, camera);
-  }
+renderer.xr.addEventListener('sessionstart', () => {
+    const spawn = sceneMap!.levels[0].spawnPoint;
+    teleportTo(spawn.x, spawn.y, spawn.z);
 });
 
-window.addEventListener('resize', () =>
-{
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+// Minimap
+const leftGrip = renderer.xr.getControllerGrip(0);
+let vrMinimap: VRMinimap | null = null;
+
+renderer.xr.addEventListener('sessionstart', () => {
+    vrMinimap = createVRMinimap(leftGrip, 256);
+});
+
+renderer.xr.addEventListener('sessionend', () => {
+    if (vrMinimap) {
+        leftGrip.remove(vrMinimap.mesh);
+        vrMinimap.texture.dispose();
+        vrMinimap = null;
+    }
+});
+
+// Input
+function getVRJoystick(): { x: number; y: number } {
+    const session = renderer.xr.getSession();
+    if (!session) return { x: 0, y: 0 };
+
+    for (const source of session.inputSources) {
+        if (source.handedness !== 'left') continue;
+        const gp = source.gamepad;
+        if (!gp) continue;
+        const x = gp.axes[2] ?? 0;
+        const y = gp.axes[3] ?? 0;
+        if (Math.abs(x) > 0.1 || Math.abs(y) > 0.1) return { x, y };
+    }
+    return { x: 0, y: 0 };
+}
+
+// Floor state
+const floorState = createFloorManager(0);
+
+// Main
+const _playerDir = new THREE.Vector3();
+const timer = new THREE.Timer();
+
+renderer.setAnimationLoop(() => {
+    timer.update();
+    renderer.xr.updateCamera(camera);
+
+    if (!floorState.isCoolingDown) {
+        updateMovement(player, camera, getVRJoystick());
+    }
+
+    updateFloorManager(floorState, sceneMap!, renderer.xr.getSession());
+
+    if (vrMinimap) {
+        camera.getWorldDirection(_playerDir);
+        const currentFloor = sceneMap!.levels[floorState.curFloorIdx];
+        renderMinimap(sceneMap!, currentFloor, player.position, _playerDir, vrMinimap.canvas, 256, floorState);
+        vrMinimap.texture.needsUpdate = true;
+    }
+
+    renderer.render(scene, camera);
+});
+
+// Resize
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
 });
