@@ -1,16 +1,32 @@
 import * as THREE from 'three';
 import type {FloorManagerState} from './floorManager.js';
 
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 7;
 
 // Types
 
+/**
+ * @typedef SubLevel
+ * @prop deltaY floor Y of next floor
+ * @prop absoluteY
+ * @prop walkable walkable tiles
+ */
 export interface SubLevel {
-    deltaY: number;        // floorY of next floor
+    deltaY: number;
     absoluteY: number;
     walkable: boolean[][];
 }
 
+/**
+ * @typedef FloorLevel
+ * @prop id
+ * @prop floorY
+ * @prop ceilingY
+ * @prop walkable
+ * @prop subLevels
+ * @prop spawnPoint
+ * @prop bounds
+ */
 export interface FloorLevel {
     id: number;
     floorY: number;
@@ -18,11 +34,20 @@ export interface FloorLevel {
     walkable: boolean[][];
     subLevels: SubLevel[];
     spawnPoint: { x: number; y: number; z: number };
+    bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
 }
 
+/**
+ * @typedef SceneMap
+ * @prop version
+ * @prop bounds
+ * @prop cols
+ * @prop rows
+ * @prop gridSize size of a cell
+ * @prop levels
+ */
 export interface SceneMap {
     version: number;
-    modelPath: string;
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
     cols: number;
     rows: number;
@@ -30,312 +55,47 @@ export interface SceneMap {
     levels: FloorLevel[];
 }
 
+/**
+ * MinimapConfig
+ */
 export interface MinimapConfig {
-    gridSize?: number;
-    minWalkableArea?: number;
-    normalThreshold?: number;
-    raycastHeight?: number;
-    clusterTolerance?: number;
-    minFloorGap?: number;        // min gap between two floor
-}
-
-// Helpers
-
-function clusterByY(
-    values: number[],
-    tolerance: number
-): { avgY: number; values: number[] }[] {
-    if (values.length === 0) return [];
-
-    const sorted = [...values].sort((a, b) => a - b);
-    const clusters: { avgY: number; values: number[] }[] = [];
-    let current: number[] = [sorted[0]];
-
-    for (let i = 1; i < sorted.length; i++) {
-        if (sorted[i] - sorted[i - 1] < tolerance) {
-            current.push(sorted[i]);
-        } else {
-            const avg = current.reduce((a, b) => a + b, 0) / current.length;
-            clusters.push({ avgY: avg, values: current });
-            current = [sorted[i]];
-        }
-    }
-    const avg = current.reduce((a, b) => a + b, 0) / current.length;
-    clusters.push({ avgY: avg, values: current });
-
-    return clusters;
-}
-
-function buildWalkableGrid(
-    allHits: { r: number; c: number; y: number }[],
-    targetY: number,
-    tolerance: number,
-    rows: number,
-    cols: number,
-    minCells: number
-): { walkable: boolean[][]; bestComponent: [number, number][] } {
-    const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-    const half = tolerance / 2;
-
-    const raw: boolean[][] = Array.from({ length: rows }, () => new Array(cols).fill(false));
-    for (const hit of allHits) {
-        if (Math.abs(hit.y - targetY) <= half) {
-            raw[hit.r][hit.c] = true;
-        }
-    }
-
-    const visited = Array.from({ length: rows }, () => new Array(cols).fill(false));
-    const walkable = Array.from({ length: rows }, () => new Array(cols).fill(false));
-    let bestComponent: [number, number][] = [];
-
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            if (!raw[r][c] || visited[r][c]) continue;
-
-            const cells: [number, number][] = [];
-            const queue: [number, number][] = [[r, c]];
-            visited[r][c] = true;
-
-            while (queue.length > 0) {
-                const [cr, cc] = queue.shift()!;
-                cells.push([cr, cc]);
-                for (const [dr, dc] of DIRS) {
-                    const nr = cr + dr, nc = cc + dc;
-                    if (
-                        nr >= 0 && nr < rows &&
-                        nc >= 0 && nc < cols &&
-                        raw[nr][nc] && !visited[nr][nc]
-                    ) {
-                        visited[nr][nc] = true;
-                        queue.push([nr, nc]);
-                    }
-                }
-            }
-
-            if (cells.length >= minCells) {
-                for (const [cr, cc] of cells) walkable[cr][cc] = true;
-                if (cells.length > bestComponent.length) bestComponent = cells;
-            }
-        }
-    }
-
-    return { walkable, bestComponent };
-}
-
-function pickSpawn(
-    bestComponent: [number, number][],
-    floorY: number,
-    minX: number,
-    minZ: number,
-    gridSize: number
-): { x: number; y: number; z: number } {
-    const mid = bestComponent[Math.floor(bestComponent.length / 2)];
-    return mid
-        ? {
-            x: minX + (mid[1] + 0.5) * gridSize,
-            y: floorY + 1.6,
-            z: minZ + (mid[0] + 0.5) * gridSize,
-        }
-        : { x: minX, y: floorY + 1.6, z: minZ };
-}
-
-// Build
-
-export function buildSceneMap(
-    scene: THREE.Scene,
-    modelPath: string,
-    config: MinimapConfig = {}
-): SceneMap {
-    const {
-        gridSize = 0.25,
-        minWalkableArea = 1.0,
-        normalThreshold = 0.7,
-        raycastHeight = 50,
-        clusterTolerance = 0.15,
-        minFloorGap = 1.8,
-    } = config;
-
-    const box = new THREE.Box3().setFromObject(scene);
-    const { min, max } = box;
-    const cols = Math.ceil((max.x - min.x) / gridSize);
-    const rows = Math.ceil((max.z - min.z) / gridSize);
-    const totalCells = rows * cols;
-    const minCells = Math.ceil(minWalkableArea / (gridSize * gridSize));
-
-    console.group('buildSceneMap');
-    console.log(`Grille : ${cols}×${rows} = ${totalCells} cellules  (gridSize=${gridSize}m)`);
-    console.log(`Bounds : X[${min.x.toFixed(2)}, ${max.x.toFixed(2)}]  Z[${min.z.toFixed(2)}, ${max.z.toFixed(2)}]`);
-
-    // Raycasting
-    console.group('Passe 1 - Raycasting');
-    console.time('raycasting');
-
-    const raycaster = new THREE.Raycaster();
-    const downDir = new THREE.Vector3(0, -1, 0);
-    const normalMat = new THREE.Matrix3();
-    const allHits: { r: number; c: number; y: number }[] = [];
-
-    const logStep = Math.max(1, Math.floor(totalCells / 20)); // log tous les 5%
-    let lastPct = 0;
-
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const cellIdx = r * cols + c;
-            const pct = Math.floor((cellIdx / totalCells) * 100);
-
-            if (pct !== lastPct && cellIdx % logStep === 0) {
-                console.log(`  ${pct}%  (${cellIdx}/${totalCells} cellules, ${allHits.length} hits)`);
-                lastPct = pct;
-            }
-
-            const x = min.x + (c + 0.5) * gridSize;
-            const z = min.z + (r + 0.5) * gridSize;
-
-            raycaster.set(new THREE.Vector3(x, raycastHeight, z), downDir);
-            const hits = raycaster.intersectObject(scene, true);
-
-            for (const hit of hits) {
-                if (!hit.face) continue;
-                normalMat.getNormalMatrix(hit.object.matrixWorld);
-                const worldNormal = hit.face.normal
-                    .clone()
-                    .applyMatrix3(normalMat)
-                    .normalize();
-                if (worldNormal.y > normalThreshold) {
-                    allHits.push({ r, c, y: hit.point.y });
-                }
-            }
-        }
-    }
-
-    console.timeEnd('raycasting');
-    console.log(`Total hits horizontaux : ${allHits.length}`);
-    console.groupEnd();
-
-    // Clustering Y
-    console.group('Passe 2 - Clustering fin des surfaces');
-    console.time('clustering-fin');
-
-    const rawClusters = clusterByY(allHits.map(h => h.y), clusterTolerance);
-    console.log(`${rawClusters.length} surfaces détectées (tolerance=${clusterTolerance}m)`);
-    rawClusters.forEach((c, i) =>
-        console.log(`  Surface ${i} : Y=${c.avgY.toFixed(3)}m  (${c.values.length} pts)`)
-    );
-
-    console.timeEnd('clustering-fin');
-    console.groupEnd();
-
-    // group by minFloorGap
-    console.group('Passe 3 - Groupement en étages');
-    console.time('groupement-etages');
-
-    type FloorGroup = { mainY: number; subYs: number[] };
-    const floorGroups: FloorGroup[] = [];
-
-    for (const cluster of rawClusters) {
-        const last = floorGroups[floorGroups.length - 1];
-        if (!last || cluster.avgY - last.mainY >= minFloorGap) {
-            floorGroups.push({ mainY: cluster.avgY, subYs: [] });
-        } else {
-            last.subYs.push(cluster.avgY);
-        }
-    }
-
-    console.log(`${floorGroups.length} étages détectés (minFloorGap=${minFloorGap}m)`);
-    floorGroups.forEach((g, i) =>
-        console.log(
-            `  Étage ${i} : floorY=${g.mainY.toFixed(3)}m` +
-            (g.subYs.length ? `  sous-niveaux=[${g.subYs.map(y => y.toFixed(2)).join(', ')}]` : '')
-        )
-    );
-
-    console.timeEnd('groupement-etages');
-    console.groupEnd();
-
-    // walkable grid + flood fill
-    console.group('Passe 4 - Grilles walkable + flood fill');
-    console.time('walkable');
-
-    const levels: FloorLevel[] = floorGroups.map((group, idx) => {
-        console.log(`  Étage ${idx} (Y=${group.mainY.toFixed(2)}m)…`);
-
-        const ceilingY = floorGroups[idx + 1]?.mainY ?? Infinity;
-
-        // Niveau principal
-        const { walkable, bestComponent } = buildWalkableGrid(
-            allHits, group.mainY, clusterTolerance, rows, cols, minCells
-        );
-        const spawnPoint = pickSpawn(bestComponent, group.mainY, min.x, min.z, gridSize);
-
-        const walkableCount = walkable.flat().filter(Boolean).length;
-        console.log(`    Principal : ${walkableCount} cellules marchables, spawn=(${spawnPoint.x.toFixed(2)}, ${spawnPoint.z.toFixed(2)})`);
-
-        // Sous-niveaux
-        const subLevels: SubLevel[] = group.subYs.map(subY => {
-            const { walkable: subWalkable } = buildWalkableGrid(
-                allHits, subY, clusterTolerance, rows, cols, minCells
-            );
-            const subCount = subWalkable.flat().filter(Boolean).length;
-            console.log(`    Sous-niveau Y=${subY.toFixed(2)}m : ${subCount} cellules`);
-            return {
-                deltaY: subY - group.mainY,
-                absoluteY: subY,
-                walkable: subWalkable,
-            };
-        });
-
-        return {
-            id: idx,
-            floorY: group.mainY,
-            ceilingY,
-            walkable,
-            subLevels,
-            spawnPoint,
-        };
-    });
-
-    console.timeEnd('walkable');
-    console.groupEnd();
-
-    console.log('buildSceneMap terminé');
-    console.groupEnd();
-
-    return {
-        version: CACHE_VERSION,
-        modelPath,
-        bounds: { minX: min.x, maxX: max.x, minZ: min.z, maxZ: max.z },
-        cols,
-        rows,
-        gridSize,
-        levels,
-    };
+    gridSize: number;
+    minWalkableArea: number;
+    normalThreshold: number;
+    voxYThr: number;
+    minFloorGap: number;
+    histogramBinSize: number;
+    histogramMinDensity: number;
 }
 
 // Save floor mapping
-
-const storageKey = (path: string) => `sceneMap:${path}`;
 const InfToJson = (_: string, v: unknown) => (v === Infinity ? '__INF__' : v);
 const JsonToInf = (_: string, v: unknown) => (v === '__INF__' ? Infinity : v);
 
-export function saveSceneMap(map: SceneMap): void {
-    try {
-        localStorage.setItem(storageKey(map.modelPath), JSON.stringify(map, InfToJson));
-    } catch (e) {
-        console.warn('SceneMap: impossible de sauvegarder (quota ?)', e);
-    }
+export function saveSceneMapAsFile(map: SceneMap): void {
+    const json = JSON.stringify(map, InfToJson, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sceneMap.json`;
+    a.click();
+
+    URL.revokeObjectURL(url);
+    console.log(`SceneMap saved : ${a.download}  (${(json.length / 1024).toFixed(1)} KB)`);
 }
 
-export function loadSceneMap(modelPath: string): SceneMap | null {
+export async function loadSceneMapFromFile(mapPath: string): Promise<SceneMap | null> {
     try {
-        const raw = localStorage.getItem(storageKey(modelPath));
-        if (!raw) return null;
-        const map = JSON.parse(raw, JsonToInf) as SceneMap;
+        const res = await fetch(mapPath);
+        if (!res.ok) return null;
+        const map = JSON.parse(await res.text(), JsonToInf) as SceneMap;
         if (map.version !== CACHE_VERSION) {
-            localStorage.removeItem(storageKey(modelPath));
-            console.log('SceneMap: cache obsolète, reconstruction nécessaire');
+            console.log('SceneMap: deprecated version, need rebuild');
             return null;
         }
-        console.log(`SceneMap: cache chargé (${map.levels.length} étage(s))`);
+        console.log(`SceneMap: load from ${mapPath} (${map.levels.length} floors)`);
         return map;
     } catch {
         return null;
@@ -356,7 +116,10 @@ export function renderMinimap(
     const ctx = canvas.getContext('2d')!;
     canvas.width = canvas.height = canvasSize;
 
-    const { bounds: { minX, maxX, minZ, maxZ }, cols, rows } = map;
+    // dim floor
+    const { minX, maxX, minZ, maxZ } = floor.bounds;
+    const rows = floor.walkable.length;
+    const cols = floor.walkable[0]?.length ?? 0;
     const cellW = canvasSize / cols;
     const cellH = canvasSize / rows;
 
@@ -365,22 +128,26 @@ export function renderMinimap(
 
     const mapAlpha = floorState?.triggerHeld ? '0.35' : '0.85';
 
-    // Niveau principal
     ctx.fillStyle = `rgba(80, 180, 120, ${mapAlpha})`;
     for (let r = 0; r < rows; r++)
         for (let c = 0; c < cols; c++)
             if (floor.walkable[r][c])
                 ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
 
-    // Sous-niveaux en teinte différente
     ctx.fillStyle = `rgba(80, 140, 220, ${mapAlpha})`;
-    for (const sub of floor.subLevels)
-        for (let r = 0; r < rows; r++)
-            for (let c = 0; c < cols; c++)
+    for (const sub of floor.subLevels) {
+        const subRows = sub.walkable.length;
+        const subCols = sub.walkable[0]?.length ?? 0;
+        // les sous-niveaux partagent les bounds de l'étage parent
+        const sCellW = canvasSize / subCols;
+        const sCellH = canvasSize / subRows;
+        for (let r = 0; r < subRows; r++)
+            for (let c = 0; c < subCols; c++)
                 if (sub.walkable[r][c])
-                    ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
+                    ctx.fillRect(c * sCellW, r * sCellH, sCellW, sCellH);
+    }
 
-    // Overlay sélection d'étage
+    // Overlay sélection d'étage — inchangé
     if (floorState?.triggerHeld) {
         const totalFloors = map.levels.length;
         const cx = canvasSize / 2;
@@ -429,7 +196,7 @@ export function renderMinimap(
         ctx.fillText(`Étage ${floor.id}  Y=${floor.floorY.toFixed(1)}m`, 8, 18);
     }
 
-    // Joueur
+    // Joueur — utilise floor.bounds
     if (!floorState?.triggerHeld) {
         const px = ((playerPos.x - minX) / (maxX - minX)) * canvasSize;
         const pz = ((playerPos.z - minZ) / (maxZ - minZ)) * canvasSize;

@@ -3,12 +3,14 @@ import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { loadGLB } from './glbLoader.js';
 import { createPlayer, updateMovement } from './player.js';
 import {
-    buildSceneMap, saveSceneMap, loadSceneMap,
+    saveSceneMapAsFile, loadSceneMapFromFile,
     renderMinimap, createVRMinimap,
     type VRMinimap,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
+
+import { buildSceneMap } from './minimapBuilder.js';
 
 // Patch XRWebGLBinding bug
 if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
@@ -41,30 +43,31 @@ scene.add(model);
 
 // SceneMap
 const loadingEl = document.createElement('div');
-loadingEl.textContent = 'Génération de la minimap…';
+loadingEl.textContent = 'Building minimap…';
 Object.assign(loadingEl.style, {
     position: 'fixed', bottom: '80px', right: '16px',
     color: '#fff', fontFamily: 'monospace', fontSize: '12px',
 });
 document.body.appendChild(loadingEl);
 
-let sceneMap = loadSceneMap(MODEL_PATH);
+console.log("Minimap existence check")
+let sceneMap = await loadSceneMapFromFile(MODEL_PATH);
+console.log(sceneMap);
 if (!sceneMap) {
-    console.time('buildSceneMap');
-    sceneMap = buildSceneMap(scene, MODEL_PATH, {
-        gridSize: 0.25,
+
+    sceneMap = await buildSceneMap(scene, {
+        gridSize: 1.0,
         minWalkableArea: 1.0,
         normalThreshold: 0.7,
-        raycastHeight: 50,
-        clusterTolerance: 0.8,
+        voxYThr: 1.0,
+        minFloorGap: 1.8,
+        histogramBinSize: 0.15,
+        histogramMinDensity: 0.005,
     });
-    console.timeEnd('buildSceneMap');
-    saveSceneMap(sceneMap);
-    console.log(
-        `${sceneMap.levels.length} étage(s) :`,
-        sceneMap.levels.map(l => `Floor${l.id} Y=${l.floorY.toFixed(2)}`)
-    );
+
+    saveSceneMapAsFile(sceneMap);
 }
+
 loadingEl.remove();
 
 // Player
@@ -146,7 +149,7 @@ function getVRJoystick(): { x: number; y: number } {
 const floorState = createFloorManager(0);
 
 // Main
-const _playerDir = new THREE.Vector3();
+const playerDir = new THREE.Vector3();
 const timer = new THREE.Timer();
 
 renderer.setAnimationLoop(() => {
@@ -160,9 +163,9 @@ renderer.setAnimationLoop(() => {
     updateFloorManager(floorState, sceneMap!, renderer.xr.getSession());
 
     if (vrMinimap) {
-        camera.getWorldDirection(_playerDir);
+        camera.getWorldDirection(playerDir);
         const currentFloor = sceneMap!.levels[floorState.curFloorIdx];
-        renderMinimap(sceneMap!, currentFloor, player.position, _playerDir, vrMinimap.canvas, 256, floorState);
+        renderMinimap(sceneMap!, currentFloor, player.position, playerDir, vrMinimap.canvas, 256, floorState);
         vrMinimap.texture.needsUpdate = true;
     }
 
