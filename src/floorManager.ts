@@ -1,11 +1,17 @@
-// import * as THREE from 'three';
 import type { SceneMap } from './minimap.js';
 import { teleportTo } from './xrMove.ts';
 
+// trigger value in [0,1]
 const TRIGGER_THRESHOLD = 0.5;
 const JOYSTICK_THRESHOLD = 0.7;
 const COOLDOWN_MS = 600;
 
+/**
+ * @typedef FloorManagerState
+ * @prop curFloorIdx current floor id
+ * @prop prevFloorIdx previous floor id
+ * @prop triggerHeld to indicate trigger holding
+ */
 export interface FloorManagerState {
     curFloorIdx: number;
     prevFloorIdx: number;
@@ -29,7 +35,7 @@ export function updateFloorManager(
     map: SceneMap,
     session: XRSession | null,
 ): void {
-    if (!session || state.isCoolingDown) return;
+    if (!session) return;
 
     let gp: Gamepad | null = null;
     for (const src of session.inputSources) {
@@ -46,13 +52,18 @@ export function updateFloorManager(
     const wasHeld = state.triggerHeld;
     state.triggerHeld = triggerVal > TRIGGER_THRESHOLD;
 
+    // TODO: navigate through multiple floors
     if (state.triggerHeld) {
-        if (joystickY < -JOYSTICK_THRESHOLD) state.dir = 1;
-        else if (joystickY > JOYSTICK_THRESHOLD) state.dir = -1;
-        else state.dir = 0;
+        if (joystickY < -JOYSTICK_THRESHOLD)
+            state.dir = 1;
+        else if (joystickY > JOYSTICK_THRESHOLD)
+            state.dir = -1;
+        else
+            state.dir = 0;
 
         const target = state.curFloorIdx + state.dir;
         state.prevFloorIdx = Math.max(0, Math.min(map.levels.length - 1, target));
+        console.log(target)
 
     } else if (wasHeld) {
         const target = state.curFloorIdx + state.dir;
@@ -61,9 +72,9 @@ export function updateFloorManager(
             state.curFloorIdx = target;
             const spawn = map.levels[target].spawnPoint;
 
-            // ← plus de player.position.set
             teleportTo(spawn.x, spawn.y, spawn.z);
 
+            // avoid spamming command
             state.isCoolingDown = true;
             setTimeout(() => { state.isCoolingDown = false; }, COOLDOWN_MS);
         }

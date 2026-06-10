@@ -7,8 +7,8 @@ const CACHE_VERSION = 7;
 
 /**
  * @typedef SubLevel
- * @prop deltaY floor Y of next floor
- * @prop absoluteY
+ * @prop deltaY Difference Y with last level
+ * @prop absoluteY floor Y of the level
  * @prop walkable walkable tiles
  */
 export interface SubLevel {
@@ -19,13 +19,13 @@ export interface SubLevel {
 
 /**
  * @typedef FloorLevel
- * @prop id
- * @prop floorY
- * @prop ceilingY
- * @prop walkable
- * @prop subLevels
- * @prop spawnPoint
- * @prop bounds
+ * @prop id Unique identifier (Useful to select a certain floor)
+ * @prop floorY Y floor's coordinates
+ * @prop ceilingY Y ceiling's coordinates
+ * @prop walkable Grid representing the walkable area
+ * @prop subLevels List of close-floor  merge in the current
+ * @prop spawnPoint Potential player starting point
+ * @prop bounds XZ min-max bounds
  */
 export interface FloorLevel {
     id: number;
@@ -39,12 +39,12 @@ export interface FloorLevel {
 
 /**
  * @typedef SceneMap
- * @prop version
- * @prop bounds
- * @prop cols
- * @prop rows
+ * @prop version Map version
+ * @prop bounds XZ min-max bound
+ * @prop cols cols's length
+ * @prop rows rows's length
  * @prop gridSize size of a cell
- * @prop levels
+ * @prop levels Available floors
  */
 export interface SceneMap {
     version: number;
@@ -56,7 +56,14 @@ export interface SceneMap {
 }
 
 /**
- * MinimapConfig
+ * @typedef MinimapConfig
+ * @prop gridSize Total size of the grid map
+ * @prop minWalkableArea Minimal walkable area to define a walkable space
+ * @prop normalThreshold Normal max differential angle
+ * @prop voxYThr floor thickness
+ * @prop minFloorGap gap minimal between 2 floors
+ * @prop histogramBinSize
+ * @prop histogramMinDensity
  */
 export interface MinimapConfig {
     gridSize: number;
@@ -72,7 +79,12 @@ export interface MinimapConfig {
 const InfToJson = (_: string, v: unknown) => (v === Infinity ? '__INF__' : v);
 const JsonToInf = (_: string, v: unknown) => (v === '__INF__' ? Infinity : v);
 
+/**
+ * Save a SceneMap in a json
+ * @param map SceneMap object
+ */
 export function saveSceneMapAsFile(map: SceneMap): void {
+    map.version = CACHE_VERSION;
     const json = JSON.stringify(map, InfToJson, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -86,6 +98,10 @@ export function saveSceneMapAsFile(map: SceneMap): void {
     console.log(`SceneMap saved : ${a.download}  (${(json.length / 1024).toFixed(1)} KB)`);
 }
 
+/**
+ * Load a map from a file
+ * @param mapPath Path to the map file
+ */
 export async function loadSceneMapFromFile(mapPath: string): Promise<SceneMap | null> {
     try {
         const res = await fetch(mapPath);
@@ -103,7 +119,16 @@ export async function loadSceneMapFromFile(mapPath: string): Promise<SceneMap | 
 }
 
 // Render Minimap
-
+/**
+ * Render a minimap on the right hand
+ * @param map
+ * @param floor current floor object
+ * @param playerPos player position
+ * @param playerDir look at direction
+ * @param canvas html canvas
+ * @param canvasSize canvas size
+ * @param floorState current floor
+ */
 export function renderMinimap(
     map: SceneMap,
     floor: FloorLevel,
@@ -126,6 +151,7 @@ export function renderMinimap(
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
 
+    // transparency
     const mapAlpha = floorState?.triggerHeld ? '0.35' : '0.85';
 
     ctx.fillStyle = `rgba(80, 180, 120, ${mapAlpha})`;
@@ -138,16 +164,17 @@ export function renderMinimap(
     for (const sub of floor.subLevels) {
         const subRows = sub.walkable.length;
         const subCols = sub.walkable[0]?.length ?? 0;
-        // les sous-niveaux partagent les bounds de l'étage parent
+
         const sCellW = canvasSize / subCols;
         const sCellH = canvasSize / subRows;
+
         for (let r = 0; r < subRows; r++)
             for (let c = 0; c < subCols; c++)
                 if (sub.walkable[r][c])
                     ctx.fillRect(c * sCellW, r * sCellH, sCellW, sCellH);
     }
 
-    // Overlay sélection d'étage — inchangé
+    // Overlay 'select floor'
     if (floorState?.triggerHeld) {
         const totalFloors = map.levels.length;
         const cx = canvasSize / 2;
@@ -196,7 +223,6 @@ export function renderMinimap(
         ctx.fillText(`Étage ${floor.id}  Y=${floor.floorY.toFixed(1)}m`, 8, 18);
     }
 
-    // Joueur — utilise floor.bounds
     if (!floorState?.triggerHeld) {
         const px = ((playerPos.x - minX) / (maxX - minX)) * canvasSize;
         const pz = ((playerPos.z - minZ) / (maxZ - minZ)) * canvasSize;
@@ -218,7 +244,9 @@ export function renderMinimap(
 }
 
 // VR Minimap
-
+/**
+ * @typedef VRMinimap canvas 3D object to display minimap
+ */
 export interface VRMinimap {
     mesh: THREE.Mesh;
     texture: THREE.CanvasTexture;

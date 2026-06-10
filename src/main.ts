@@ -38,6 +38,7 @@ scene.add(dirLight);
 
 // Model
 const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
+const MAP_PATH = "/maps/sceneMap.json";
 const model = await loadGLB(MODEL_PATH);
 scene.add(model);
 
@@ -51,7 +52,7 @@ Object.assign(loadingEl.style, {
 document.body.appendChild(loadingEl);
 
 console.log("Minimap existence check")
-let sceneMap = await loadSceneMapFromFile(MODEL_PATH);
+let sceneMap = await loadSceneMapFromFile(MAP_PATH);
 console.log(sceneMap);
 if (!sceneMap) {
 
