@@ -62,8 +62,8 @@ if (!sceneMap) {
         normalThreshold: 0.7,
         voxYThr: 1.0,
         minFloorGap: 1.8,
-        histogramBinSize: 0.15,
-        histogramMinDensity: 0.005,
+        histoHeightSize: 0.15,
+        minPeakArea: 2,
     });
 
     saveSceneMapAsFile(sceneMap);

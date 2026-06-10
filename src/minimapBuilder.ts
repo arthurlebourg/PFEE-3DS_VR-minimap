@@ -7,53 +7,55 @@ const CACHE_VERSION = 1;
 /**
  * Create a histogram of Y hits
  * @param hits
- * @param binSize
- * @param minDensity
+ * @param sliceSize small cluster Y
+ * @param minPeakArea minimal area to define a peak
+ * @param gridSize size of a cell
  * @return List of histogram peaks + density
  */
 function buildYHistogram(
     hits: { y: number }[],
-    binSize: number,
-    minDensity = 0.01
+    sliceSize: number,
+    minPeakArea: number,
+    gridSize: number
 ): { centerY: number; count: number }[] {
     if (hits.length === 0) return [];
 
     const minY = Math.min(...hits.map(h => h.y));
     const maxY = Math.max(...hits.map(h => h.y));
-    const numBins = Math.ceil((maxY - minY) / binSize) + 1;
-    const bins = new Array(numBins).fill(0);
+    const numSlices = Math.ceil((maxY - minY) / sliceSize) + 1;
+    const histo = new Array(numSlices).fill(0);
 
     for (const hit of hits) {
-        const idx = Math.min(Math.floor((hit.y - minY) / binSize), numBins - 1);
-        bins[idx]++;
+        const idx = Math.min(Math.floor((hit.y - minY) / sliceSize), numSlices - 1);
+        histo[idx]++;
     }
 
     console.group("Histogram Y");
-    bins.forEach((count, i) => {
+    histo.forEach((count, i) => {
         if (count === 0) return;
-        const y = minY + (i + 0.5) * binSize;
+        const y = minY + (i + 0.5) * sliceSize;
         const bar = '█'.repeat(Math.ceil(count / hits.length * 200));
         console.log(`    Y=${y.toFixed(2)}m  [${count.toString().padStart(5)}]  ${bar}`);
     });
     console.groupEnd();
 
-    // Local peaks => bigger than neighbour & above density threshold
-    const threshold = hits.length * minDensity;
+    // Local peaks => bigger than neighbour & above surface threshold
     const peaks: { centerY: number; count: number }[] = [];
 
-    for (let i = 0; i < bins.length; i++) {
-        const prev = bins[i - 1] ?? 0;
-        const next = bins[i + 1] ?? 0;
-        if (bins[i] >= prev && bins[i] >= next && bins[i] > threshold) {
+    for (let i = 0; i < histo.length; i++) {
+        const prev = histo[i - 1] ?? 0;
+        const next = histo[i + 1] ?? 0;
+        const area = histo[i] * gridSize;
+        if (histo[i] >= prev && histo[i] >= next && area > minPeakArea) {
             // Merge with previous peak
             const last = peaks[peaks.length - 1];
-            if (last && minY + (i + 0.5) * binSize - last.centerY < binSize * 2) {
+            if (last && minY + (i + 0.5) * sliceSize - last.centerY < sliceSize * 2) {
                 // Keep the bigger one
-                if (bins[i] > last.count) {
-                    peaks[peaks.length - 1] = { centerY: minY + (i + 0.5) * binSize, count: bins[i] };
+                if (histo[i] > last.count) {
+                    peaks[peaks.length - 1] = { centerY: minY + (i + 0.5) * sliceSize, count: histo[i] };
                 }
             } else {
-                peaks.push({ centerY: minY + (i + 0.5) * binSize, count: bins[i] });
+                peaks.push({ centerY: minY + (i + 0.5) * sliceSize, count: histo[i] });
             }
         }
     }
@@ -76,8 +78,8 @@ export async function buildSceneMap(
         normalThreshold,
         voxYThr,
         minFloorGap,
-        histogramBinSize,
-        histogramMinDensity,
+        histoHeightSize,
+        minPeakArea
     } = config;
 
     const box = new THREE.Box3().setFromObject(scene);
@@ -140,7 +142,7 @@ export async function buildSceneMap(
     console.time('histogram');
 
     console.log('Building histogram Y…');
-    const peaks = buildYHistogram(allHits, histogramBinSize, histogramMinDensity);
+    const peaks = buildYHistogram(allHits, histoHeightSize, minPeakArea, gridSize);
 
     console.log(`${peaks.length} peaks detected :`);
     peaks.forEach((p, i) => console.log(`    Peak ${i} : Y=${p.centerY.toFixed(3)}m  (${p.count} hits)`));

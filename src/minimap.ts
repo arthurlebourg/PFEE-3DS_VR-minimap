@@ -62,8 +62,8 @@ export interface SceneMap {
  * @prop normalThreshold Normal max differential angle
  * @prop voxYThr floor thickness
  * @prop minFloorGap gap minimal between 2 floors
- * @prop histogramBinSize
- * @prop histogramMinDensity
+ * @prop histoHeightSize Y slice thickness for histogram
+ * @prop minPeakArea minimal area to define a peak
  */
 export interface MinimapConfig {
     gridSize: number;
@@ -71,8 +71,8 @@ export interface MinimapConfig {
     normalThreshold: number;
     voxYThr: number;
     minFloorGap: number;
-    histogramBinSize: number;
-    histogramMinDensity: number;
+    histoHeightSize: number;
+    minPeakArea: number;
 }
 
 // Save floor mapping
