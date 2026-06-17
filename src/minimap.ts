@@ -48,6 +48,7 @@ export interface FloorLevel {
  */
 export interface SceneMap {
     version: number;
+    sceneBounds: { sceneMinX: number; sceneMinZ: number; };
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
     cols: number;
     rows: number;

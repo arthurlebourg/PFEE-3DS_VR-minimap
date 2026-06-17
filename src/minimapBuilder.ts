@@ -229,6 +229,7 @@ export async function buildSceneMap(
 
     return {
         version: CACHE_VERSION,
+        sceneBounds: { sceneMinX: min.x, sceneMinZ: min.z },
         bounds: { minX: globalMinX, maxX: globalMaxX, minZ: globalMinZ, maxZ: globalMaxZ },
         cols: Math.ceil((globalMaxX - globalMinX) / gridSize),
         rows: Math.ceil((globalMaxZ - globalMinZ) / gridSize),
