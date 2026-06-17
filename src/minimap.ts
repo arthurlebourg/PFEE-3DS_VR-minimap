@@ -143,11 +143,11 @@ export function renderMinimap(
     canvas.width = canvas.height = canvasSize;
 
     // dim floor
-    const { minX, maxX, minZ, maxZ } = floor.bounds;
     const rows = floor.walkable.length;
     const cols = floor.walkable[0]?.length ?? 0;
-    const cellW = canvasSize / cols;
-    const cellH = canvasSize / rows;
+    const scale  = Math.min(canvasSize / cols, canvasSize / rows);
+    const offsetX = (canvasSize - cols * scale) / 2;
+    const offsetZ = (canvasSize - rows * scale) / 2;
 
     ctx.fillStyle = '#111';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
@@ -159,20 +159,20 @@ export function renderMinimap(
     for (let r = 0; r < rows; r++)
         for (let c = 0; c < cols; c++)
             if (floor.walkable[r][c])
-                ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
+                ctx.fillRect(offsetX + c * scale, offsetZ + r * scale, scale, scale);
 
     ctx.fillStyle = `rgba(80, 140, 220, ${mapAlpha})`;
     for (const sub of floor.subLevels) {
         const subRows = sub.walkable.length;
         const subCols = sub.walkable[0]?.length ?? 0;
-
-        const sCellW = canvasSize / subCols;
-        const sCellH = canvasSize / subRows;
+        const sScale   = Math.min(canvasSize / subCols, canvasSize / subRows);
+        const sOffsetX = (canvasSize - subCols * sScale) / 2;
+        const sOffsetZ = (canvasSize - subRows * sScale) / 2;
 
         for (let r = 0; r < subRows; r++)
             for (let c = 0; c < subCols; c++)
                 if (sub.walkable[r][c])
-                    ctx.fillRect(c * sCellW, r * sCellH, sCellW, sCellH);
+                    ctx.fillRect(sOffsetX + c * sScale, sOffsetZ + r * sScale, sScale, sScale);
     }
 
     // Overlay 'select floor'
@@ -225,9 +225,11 @@ export function renderMinimap(
     }
 
     if (!floorState?.triggerHeld) {
-        const px = ((playerPos.x - minX) / (maxX - minX)) * canvasSize;
-        const pz = ((playerPos.z - minZ) / (maxZ - minZ)) * canvasSize;
-        const angle = Math.atan2(playerDir.x, playerDir.z);
+        // Player position
+        const { sceneMinX, sceneMinZ } = map.sceneBounds;
+        const px = offsetX + ((playerPos.x - sceneMinX) / map.gridSize) * scale;
+        const pz = offsetZ + ((playerPos.z - sceneMinZ) / map.gridSize) * scale;
+        const angle = Math.atan2(playerDir.x, -playerDir.z);
 
         ctx.save();
         ctx.translate(px, pz);
