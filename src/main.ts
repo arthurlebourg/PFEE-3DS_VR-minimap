@@ -113,7 +113,8 @@ initXrMove(renderer.xr);
 
 renderer.xr.addEventListener('sessionstart', () => {
     const spawn = sceneMap!.levels[0].spawnPoint;
-    teleportTo(spawn.x, spawn.y, spawn.z);
+    const EYE_HEIGHT = 1.65;
+    player.position.set(spawn.x, spawn.y - EYE_HEIGHT, spawn.z);
 });
 
 // Minimap
@@ -163,7 +164,7 @@ renderer.setAnimationLoop(() => {
         updateMovement(player, camera, getVRJoystick());
     }
 
-    updateFloorManager(floorState, sceneMap!, renderer.xr.getSession());
+    updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player);
 
     if (vrMinimap) {
         camera.getWorldDirection(playerDir);

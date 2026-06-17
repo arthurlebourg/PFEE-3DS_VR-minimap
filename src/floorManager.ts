@@ -1,3 +1,5 @@
+import * as THREE from 'three';
+
 import type { SceneMap } from './minimap.js';
 import { teleportTo } from './xrMove.ts';
 
@@ -34,6 +36,7 @@ export function updateFloorManager(
     state: FloorManagerState,
     map: SceneMap,
     session: XRSession | null,
+    player: THREE.Group
 ): void {
     if (!session) return;
 
@@ -72,13 +75,13 @@ export function updateFloorManager(
             state.curFloorIdx = target;
             const spawn = map.levels[target].spawnPoint;
 
-            teleportTo(spawn.x, spawn.y, spawn.z);
+            const EYE_HEIGHT = 1.65;
+            player.position.set(spawn.x, spawn.y - EYE_HEIGHT, spawn.z);
 
             // avoid spamming command
             state.isCoolingDown = true;
             setTimeout(() => { state.isCoolingDown = false; }, COOLDOWN_MS);
         }
-
         state.dir = 0;
         state.prevFloorIdx = state.curFloorIdx;
     }

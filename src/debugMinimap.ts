@@ -191,7 +191,7 @@ function buildFloorLabel(
     const spriteMat = new THREE.SpriteMaterial({ map: canvasTexture, depthTest: false });
     const sprite = new THREE.Sprite(spriteMat);
 
-    sprite.position.set(level.spawnPoint.x, level.floorY + 2, level.spawnPoint.z);
+    sprite.position.set(level.spawnPoint.x, level.spawnPoint.y, level.spawnPoint.z);
     sprite.scale.set(1.2, 1.2 * H / W, 1);
 
     return { sprite, canvasTexture, spriteMat };
