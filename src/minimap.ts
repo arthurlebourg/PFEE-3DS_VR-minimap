@@ -229,10 +229,14 @@ export function renderMinimap(
         const { sceneMinX, sceneMinZ } = map.sceneBounds;
         const px = offsetX + ((playerPos.x - sceneMinX) / map.gridSize) * scale;
         const pz = offsetZ + ((playerPos.z - sceneMinZ) / map.gridSize) * scale;
+        // Clamp player position to the edge of the minimap
+        const EDGE_MARGIN = 5;
+        const clampedPx = Math.max(EDGE_MARGIN, Math.min(canvasSize - EDGE_MARGIN, px));
+        const clampedPz = Math.max(EDGE_MARGIN, Math.min(canvasSize - EDGE_MARGIN, pz));
         const angle = Math.atan2(playerDir.x, -playerDir.z);
 
         ctx.save();
-        ctx.translate(px, pz);
+        ctx.translate(clampedPx, clampedPz);
         ctx.rotate(angle);
         ctx.fillStyle = '#ff4444';
         ctx.beginPath();
