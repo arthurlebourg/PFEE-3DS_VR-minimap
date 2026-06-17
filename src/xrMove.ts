@@ -16,6 +16,7 @@ export function initXrMove(xrRenderer: THREE.WebGLRenderer['xr']): void {
 }
 
 /**
+ * deprecated -> use player.position.set()
  * Move the player with his reference space
  * @param x
  * @param y

@@ -9,7 +9,7 @@ import {
 } from './minimap.js';
 import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
-
+import { createDebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap } from './minimapBuilder.js';
 
 // Patch XRWebGLBinding bug
@@ -61,15 +61,17 @@ if (!sceneMap) {
         minWalkableArea: 1.0,
         normalThreshold: 0.7,
         voxYThr: 1.0,
-        minFloorGap: 1.8,
+        minFloorGap: 0.4,
         histoHeightSize: 0.15,
         minPeakArea: 2,
     });
 
-    saveSceneMapAsFile(sceneMap);
+    // disable saving for now
+    // saveSceneMapAsFile(sceneMap);
 }
 
 loadingEl.remove();
+const debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
 
 // Player
 const player = createPlayer(camera);
@@ -111,7 +113,8 @@ initXrMove(renderer.xr);
 
 renderer.xr.addEventListener('sessionstart', () => {
     const spawn = sceneMap!.levels[0].spawnPoint;
-    teleportTo(spawn.x, spawn.y, spawn.z);
+    const EYE_HEIGHT = 1.65;
+    player.position.set(spawn.x, spawn.y - EYE_HEIGHT, spawn.z);
 });
 
 // Minimap
@@ -161,7 +164,7 @@ renderer.setAnimationLoop(() => {
         updateMovement(player, camera, getVRJoystick());
     }
 
-    updateFloorManager(floorState, sceneMap!, renderer.xr.getSession());
+    updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player);
 
     if (vrMinimap) {
         camera.getWorldDirection(playerDir);
@@ -178,4 +181,9 @@ window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Display debug overlay
+window.addEventListener('keydown', e => {
+    if (e.key === 'd' || e.key === 'D') debugOverlay.toggle();
 });

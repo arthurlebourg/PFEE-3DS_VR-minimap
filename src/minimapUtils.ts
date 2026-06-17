@@ -91,8 +91,8 @@ export function pickSpawn(
     return mid
         ? {
             x: minX + (mid[1] + 0.5) * gridSize,
-            y: floorY,
+            y: floorY + 0.5,  // spawn a bit above the floor
             z: minZ + (mid[0] + 0.5) * gridSize,
         }
-        : { x: minX, y: floorY + 1.6, z: minZ };
+        : { x: minX, y: floorY + 0.5, z: minZ };
 }
