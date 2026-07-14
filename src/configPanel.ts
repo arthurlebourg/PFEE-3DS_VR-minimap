@@ -18,6 +18,8 @@ export interface DesktopConfigPanel {
 export function createDesktopConfigPanel(
     state: EditModeState,
     onRebuild: () => void,
+    onSave: () => void,
+    onReset: () => void,
 ): DesktopConfigPanel {
     const panel = document.createElement('div');
     Object.assign(panel.style, {
@@ -79,6 +81,31 @@ export function createDesktopConfigPanel(
     });
     rebuildBtn.addEventListener('click', onRebuild);
     panel.appendChild(rebuildBtn);
+
+    const actionsRow = document.createElement('div');
+    Object.assign(actionsRow.style, { display: 'flex', gap: '6px', marginTop: '6px' });
+
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = '↺ Défauts';
+    Object.assign(resetBtn.style, {
+        flex: '1', padding: '6px',
+        background: '#555', color: '#fff', border: 'none',
+        borderRadius: '4px', cursor: 'pointer', fontFamily: 'monospace',
+    });
+    resetBtn.addEventListener('click', onReset);
+    actionsRow.appendChild(resetBtn);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = '💾 Save map';
+    Object.assign(saveBtn.style, {
+        flex: '1', padding: '6px',
+        background: '#2668a6', color: '#fff', border: 'none',
+        borderRadius: '4px', cursor: 'pointer', fontFamily: 'monospace',
+    });
+    saveBtn.addEventListener('click', onSave);
+    actionsRow.appendChild(saveBtn);
+
+    panel.appendChild(actionsRow);
 
     const status = document.createElement('div');
     Object.assign(status.style, { marginTop: '6px', color: '#888' });
@@ -168,7 +195,8 @@ export function renderConfigPanel(state: EditModeState, canvas: HTMLCanvasElemen
     ctx.textAlign = 'center';
     ctx.font = '9px monospace';
     ctx.fillStyle = '#888';
-    ctx.fillText('stick ↕ sélection · trigger + ↔ ajuste', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('droite: stick ↕ sélection · trigger+↔ ajuste', canvasSize / 2, canvasSize - 38);
+    ctx.fillText('gauche: X save · Y défauts', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty ? '#ff8844' : '#55ff88';

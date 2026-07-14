@@ -27,6 +27,7 @@ export const EDITABLE_PARAMS: EditableParam[] = [
  * @prop active whether the edit mode overlay is currently shown
  * @prop selectedIdx index into EDITABLE_PARAMS currently highlighted
  * @prop config live MinimapConfig, mutated in place by the panels
+ * @prop defaults original MinimapConfig, used by resetToDefaults
  * @prop isRebuilding a rebuild is in progress
  * @prop isDirty config changed since the last successful rebuild
  */
@@ -34,6 +35,7 @@ export interface EditModeState {
     active: boolean;
     selectedIdx: number;
     config: MinimapConfig;
+    defaults: MinimapConfig;
     isRebuilding: boolean;
     isDirty: boolean;
 }
@@ -43,9 +45,19 @@ export function createEditMode(initialConfig: MinimapConfig): EditModeState {
         active: false,
         selectedIdx: 0,
         config: { ...initialConfig },
+        defaults: { ...initialConfig },
         isRebuilding: false,
         isDirty: false,
     };
+}
+
+/**
+ * Restore config to the values EditMode was created with. Does not rebuild
+ * on its own — the caller still has to trigger a rebuild to apply it.
+ */
+export function resetToDefaults(state: EditModeState): void {
+    state.config = { ...state.defaults };
+    state.isDirty = true;
 }
 
 export function selectNextParam(state: EditModeState, dir: 1 | -1): void {
@@ -64,63 +76,96 @@ const SELECT_THRESHOLD = 0.6;
 const ADJUST_THRESHOLD = 0.15;
 const SELECT_COOLDOWN_MS = 250;
 
+function findGamepad(session: XRSession, handedness: XRHandedness): Gamepad | null {
+    for (const src of session.inputSources) {
+        if (src.handedness === handedness && src.gamepad) return src.gamepad;
+    }
+    return null;
+}
+
+/** Edge-triggered button helper: returns true only on the press frame. */
+function pressedEdge(gp: Gamepad, buttonIdx: number, prev: boolean): [fired: boolean, pressed: boolean] {
+    const pressed = gp.buttons[buttonIdx]?.pressed ?? false;
+    return [pressed && !prev, pressed];
+}
+
 /**
- * Right-controller input for the edit mode ("hold trigger + push stick" UX):
+ * Controller input for the edit mode ("hold trigger + push stick" UX):
+ *  Right hand
  *  - A/X button                      : toggle edit mode on/off
  *  - B/Y button                      : trigger an explicit rebuild
  *  - stick up/down (no trigger)      : move the selection between params
  *  - stick left/right + trigger held : adjust the selected param's value
+ *  Left hand (only while edit mode is active)
+ *  - X button                        : save the current map to a file
+ *  - Y button                        : reset config to defaults
  *
  * @param state edit mode state to mutate
- * @param onRebuild called once per B/Y button press while active
+ * @param onRebuild called once per right B/Y button press while active
+ * @param onSave called once per left X button press while active
+ * @param onReset called once per left Y button press while active
  * @return update function to call every frame with the current session + deltaTime
  */
 export function createEditModeInputHandler(
     state: EditModeState,
     onRebuild: () => void,
+    onSave: () => void,
+    onReset: () => void,
 ): (session: XRSession | null, deltaTime: number) => void {
     let prevToggle = false;
     let prevRebuild = false;
+    let prevSave = false;
+    let prevReset = false;
     let lastSelectAt = 0;
 
     return (session, deltaTime) => {
         if (!session) return;
 
-        let gp: Gamepad | null = null;
-        for (const src of session.inputSources) {
-            if (src.handedness === 'right' && src.gamepad) {
-                gp = src.gamepad;
-                break;
-            }
+        const rightGp = findGamepad(session, 'right');
+        if (rightGp) {
+            const [toggled, toggleHeld] = pressedEdge(rightGp, 4, prevToggle);
+            if (toggled) state.active = !state.active;
+            prevToggle = toggleHeld;
         }
-        if (!gp) return;
 
-        const toggleBtn = gp.buttons[4]?.pressed ?? false;
-        if (toggleBtn && !prevToggle) state.active = !state.active;
-        prevToggle = toggleBtn;
-
-        const rebuildBtn = gp.buttons[5]?.pressed ?? false;
         if (!state.active) {
-            prevRebuild = rebuildBtn;
+            prevRebuild = false;
+            prevSave = false;
+            prevReset = false;
             return;
         }
-        if (rebuildBtn && !prevRebuild) onRebuild();
-        prevRebuild = rebuildBtn;
 
-        const stickX = gp.axes[2] ?? 0;
-        const stickY = gp.axes[3] ?? 0;
-        const triggerHeld = (gp.buttons[0]?.value ?? 0) > 0.5;
+        if (rightGp) {
+            const [rebuild, rebuildHeld] = pressedEdge(rightGp, 5, prevRebuild);
+            if (rebuild) onRebuild();
+            prevRebuild = rebuildHeld;
 
-        const now = performance.now();
-        if (!triggerHeld && Math.abs(stickY) > SELECT_THRESHOLD && now - lastSelectAt > SELECT_COOLDOWN_MS) {
-            selectNextParam(state, stickY > 0 ? 1 : -1);
-            lastSelectAt = now;
+            const stickX = rightGp.axes[2] ?? 0;
+            const stickY = rightGp.axes[3] ?? 0;
+            const triggerHeld = (rightGp.buttons[0]?.value ?? 0) > 0.5;
+
+            const now = performance.now();
+            if (!triggerHeld && Math.abs(stickY) > SELECT_THRESHOLD && now - lastSelectAt > SELECT_COOLDOWN_MS) {
+                selectNextParam(state, stickY > 0 ? 1 : -1);
+                lastSelectAt = now;
+            }
+
+            if (triggerHeld && Math.abs(stickX) > ADJUST_THRESHOLD) {
+                const param = EDITABLE_PARAMS[state.selectedIdx];
+                const rangeSpeed = (param.max - param.min) * 0.3; // ~3.3s to cross the full range
+                adjustSelectedParam(state, stickX * rangeSpeed * deltaTime);
+            }
         }
 
-        if (triggerHeld && Math.abs(stickX) > ADJUST_THRESHOLD) {
-            const param = EDITABLE_PARAMS[state.selectedIdx];
-            const rangeSpeed = (param.max - param.min) * 0.3; // ~3.3s to cross the full range
-            adjustSelectedParam(state, stickX * rangeSpeed * deltaTime);
+        const leftGp = findGamepad(session, 'left');
+        if (leftGp) {
+            const [save, saveHeld] = pressedEdge(leftGp, 4, prevSave);
+            if (save) onSave();
+            prevSave = saveHeld;
+
+            const [reset, resetHeld] = pressedEdge(leftGp, 5, prevReset);
+            if (reset) onReset();
+            prevReset = resetHeld;
         }
     };
 }

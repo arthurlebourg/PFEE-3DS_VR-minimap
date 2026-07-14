@@ -11,7 +11,7 @@ import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
 import { createDebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap } from './minimapBuilder.js';
-import { createEditMode, createEditModeInputHandler } from './editMode.js';
+import { createEditMode, createEditModeInputHandler, resetToDefaults } from './editMode.js';
 import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
 
 // Patch XRWebGLBinding bug
@@ -69,15 +69,12 @@ let sceneMap = await loadSceneMapFromFile(MAP_PATH);
 console.log(sceneMap);
 if (!sceneMap) {
     sceneMap = await buildSceneMap(scene, defaultConfig);
-
-    // disable saving for now
-    // saveSceneMapAsFile(sceneMap);
 }
 
 loadingEl.remove();
 let debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
 
-// Edit mode — live minimap config tuning (desktop panel + in-VR panel)
+// Edit mode - live minimap config tuning (desktop panel + in-VR panel)
 const editMode = createEditMode(defaultConfig);
 
 async function rebuildMinimap(): Promise<void> {
@@ -95,8 +92,16 @@ async function rebuildMinimap(): Promise<void> {
     editMode.isDirty = false;
 }
 
-const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap);
-const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap);
+function saveMinimap(): void {
+    if (sceneMap) saveSceneMapAsFile(sceneMap);
+}
+
+function resetMinimapConfig(): void {
+    resetToDefaults(editMode);
+}
+
+const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, saveMinimap, resetMinimapConfig);
+const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap, saveMinimap, resetMinimapConfig);
 
 // Player
 const player = createPlayer(camera);
