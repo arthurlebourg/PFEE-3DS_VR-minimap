@@ -11,6 +11,8 @@ import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
 import { createDebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap } from './minimapBuilder.js';
+import { createEditMode, createEditModeInputHandler } from './editMode.js';
+import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
 
 // Patch XRWebGLBinding bug
 if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
@@ -38,6 +40,7 @@ scene.add(dirLight);
 
 // Model
 const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
+// const MODEL_PATH = '/models/plant-3.glb';
 const MAP_PATH = "/maps/sceneMap.json";
 const model = await loadGLB(MODEL_PATH);
 scene.add(model);
@@ -51,27 +54,49 @@ Object.assign(loadingEl.style, {
 });
 document.body.appendChild(loadingEl);
 
+const defaultConfig = {
+    gridSize: 1.0,
+    minWalkableArea: 1.0,
+    normalThreshold: 0.7,
+    voxYThr: 1.0,
+    minFloorGap: 0.4,
+    histoHeightSize: 0.15,
+    minPeakArea: 2,
+};
+
 console.log("Minimap existence check")
 let sceneMap = await loadSceneMapFromFile(MAP_PATH);
 console.log(sceneMap);
 if (!sceneMap) {
-
-    sceneMap = await buildSceneMap(scene, {
-        gridSize: 1.0,
-        minWalkableArea: 1.0,
-        normalThreshold: 0.7,
-        voxYThr: 1.0,
-        minFloorGap: 0.4,
-        histoHeightSize: 0.15,
-        minPeakArea: 2,
-    });
+    sceneMap = await buildSceneMap(scene, defaultConfig);
 
     // disable saving for now
     // saveSceneMapAsFile(sceneMap);
 }
 
 loadingEl.remove();
-const debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
+let debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
+
+// Edit mode — live minimap config tuning (desktop panel + in-VR panel)
+const editMode = createEditMode(defaultConfig);
+
+async function rebuildMinimap(): Promise<void> {
+    if (editMode.isRebuilding) return;
+    editMode.isRebuilding = true;
+
+    debugOverlay.dispose();
+    sceneMap = await buildSceneMap(scene, editMode.config);
+    debugOverlay = createDebugFloorOverlay(scene, sceneMap);
+
+    floorState.curFloorIdx = Math.min(floorState.curFloorIdx, sceneMap.levels.length - 1);
+    floorState.prevFloorIdx = floorState.curFloorIdx;
+
+    editMode.isRebuilding = false;
+    editMode.isDirty = false;
+}
+
+const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap);
+const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap);
 
 // Player
 const player = createPlayer(camera);
@@ -133,6 +158,22 @@ renderer.xr.addEventListener('sessionend', () => {
     }
 });
 
+// Edit mode panel (right grip) — A button toggles, B button rebuilds
+const rightGrip = renderer.xr.getControllerGrip(1);
+let vrConfigPanel: VRConfigPanel | null = null;
+
+renderer.xr.addEventListener('sessionstart', () => {
+    vrConfigPanel = createVRConfigPanel(rightGrip, 256);
+});
+
+renderer.xr.addEventListener('sessionend', () => {
+    if (vrConfigPanel) {
+        rightGrip.remove(vrConfigPanel.mesh);
+        vrConfigPanel.texture.dispose();
+        vrConfigPanel = null;
+    }
+});
+
 // Input
 function getVRJoystick(): { x: number; y: number } {
     const session = renderer.xr.getSession();
@@ -164,7 +205,11 @@ renderer.setAnimationLoop(() => {
         updateMovement(player, camera, getVRJoystick());
     }
 
-    updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player);
+    editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
+
+    if (!editMode.active) {
+        updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player);
+    }
 
     if (vrMinimap) {
         camera.getWorldDirection(playerDir);
@@ -172,6 +217,16 @@ renderer.setAnimationLoop(() => {
         renderMinimap(sceneMap!, currentFloor, player.position, playerDir, vrMinimap.canvas, 256, floorState);
         vrMinimap.texture.needsUpdate = true;
     }
+
+    if (vrConfigPanel) {
+        vrConfigPanel.mesh.visible = editMode.active;
+        if (editMode.active) {
+            renderConfigPanel(editMode, vrConfigPanel.canvas, 256);
+            vrConfigPanel.texture.needsUpdate = true;
+        }
+    }
+
+    desktopConfigPanel.sync();
 
     renderer.render(scene, camera);
 });
@@ -186,4 +241,9 @@ window.addEventListener('resize', () => {
 // Display debug overlay
 window.addEventListener('keydown', e => {
     if (e.key === 'd' || e.key === 'D') debugOverlay.toggle();
+    if (e.key === 'e' || e.key === 'E') {
+        editMode.active = !editMode.active;
+        desktopConfigPanel.sync();
+    }
+    if ((e.key === 'r' || e.key === 'R') && editMode.active) rebuildMinimap();
 });

@@ -10,6 +10,7 @@ export function loadGLB(path: string = "/models/apartment_2_4f7f_in_japan.glb"):
                 const model = gltf.scene;
                 model.position.set(0, 0, 0);
                 model.scale.set(0.01, 0.01, 0.01);
+                // model.scale.set(10.0, 10.0, 10.0);
                 console.log('Model loaded successfully');
                 resolve(model);
                 // scene.add(model);
