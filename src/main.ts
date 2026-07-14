@@ -11,8 +11,10 @@ import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
 import { createDebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap } from './minimapBuilder.js';
-import { createEditMode, createEditModeInputHandler, resetToDefaults } from './editMode.js';
+import { createEditMode, createEditModeInputHandler } from './editMode.js';
 import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
+import { commitFloorMove, type MapContext } from './floorAdjust.js';
+import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
 
 // Patch XRWebGLBinding bug
 if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
@@ -77,16 +79,33 @@ let debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
 // Edit mode - live minimap config tuning (desktop panel + in-VR panel)
 const editMode = createEditMode(defaultConfig);
 
+let floorMoveVisual: FloorMoveVisual | null = null;
+let floorMoveVisualFloorId = -1;
+
+function disposeFloorMoveVisual(): void {
+    if (floorMoveVisual) {
+        floorMoveVisual.dispose();
+        floorMoveVisual = null;
+        floorMoveVisualFloorId = -1;
+    }
+}
+
+function getMapContext(): MapContext {
+    return { levelCount: sceneMap!.levels.length, gridSize: sceneMap!.gridSize, levels: sceneMap!.levels };
+}
+
 async function rebuildMinimap(): Promise<void> {
     if (editMode.isRebuilding) return;
     editMode.isRebuilding = true;
 
     debugOverlay.dispose();
+    disposeFloorMoveVisual();
     sceneMap = await buildSceneMap(scene, editMode.config);
     debugOverlay = createDebugFloorOverlay(scene, sceneMap);
 
     floorState.curFloorIdx = Math.min(floorState.curFloorIdx, sceneMap.levels.length - 1);
     floorState.prevFloorIdx = floorState.curFloorIdx;
+    editMode.floors.selectedFloorIdx = Math.min(editMode.floors.selectedFloorIdx, sceneMap.levels.length - 1);
 
     editMode.isRebuilding = false;
     editMode.isDirty = false;
@@ -96,12 +115,38 @@ function saveMinimap(): void {
     if (sceneMap) saveSceneMapAsFile(sceneMap);
 }
 
-function resetMinimapConfig(): void {
-    resetToDefaults(editMode);
+function confirmFloorMove(): void {
+    if (!sceneMap) return;
+    const level = sceneMap.levels[editMode.floors.selectedFloorIdx];
+    if (!level) return;
+
+    commitFloorMove(editMode.floors, level, sceneMap.gridSize);
+
+    debugOverlay.dispose();
+    debugOverlay = createDebugFloorOverlay(scene, sceneMap);
+    disposeFloorMoveVisual();
 }
 
-const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, saveMinimap, resetMinimapConfig);
-const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap, saveMinimap, resetMinimapConfig);
+function ensureFloorMoveVisual(): void {
+    if (!sceneMap || !editMode.active || editMode.panel !== 'floors') {
+        disposeFloorMoveVisual();
+        return;
+    }
+
+    const level = sceneMap.levels[editMode.floors.selectedFloorIdx];
+    if (!level) return;
+
+    if (!floorMoveVisual || floorMoveVisualFloorId !== level.id) {
+        disposeFloorMoveVisual();
+        floorMoveVisual = createFloorMoveVisual(scene, sceneMap, level);
+        floorMoveVisualFloorId = level.id;
+    }
+
+    floorMoveVisual.update(editMode.floors);
+}
+
+const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
+const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
 
 // Player
 const player = createPlayer(camera);
@@ -223,10 +268,12 @@ renderer.setAnimationLoop(() => {
         vrMinimap.texture.needsUpdate = true;
     }
 
+    ensureFloorMoveVisual();
+
     if (vrConfigPanel) {
         vrConfigPanel.mesh.visible = editMode.active;
         if (editMode.active) {
-            renderConfigPanel(editMode, vrConfigPanel.canvas, 256);
+            renderConfigPanel(editMode, getMapContext(), vrConfigPanel.canvas, 256);
             vrConfigPanel.texture.needsUpdate = true;
         }
     }
