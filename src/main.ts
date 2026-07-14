@@ -57,7 +57,7 @@ console.log(sceneMap);
 if (!sceneMap) {
 
     sceneMap = await buildSceneMap(scene, {
-        gridSize: 1.0,
+        gridSize: 0.5, // best 0.25 but slow
         minWalkableArea: 1.0,
         normalThreshold: 0.7,
         voxYThr: 1.0,

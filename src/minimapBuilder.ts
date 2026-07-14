@@ -4,6 +4,9 @@ import { buildWalkableGrid, pickSpawn } from './minimapUtils.js';
 
 const CACHE_VERSION = 1;
 
+// Globbing grid size = gridSize * factor
+const MACRO_CELL_MULTIPLIER = 2; // best 0.25 * 4
+
 /**
  * Create a histogram of Y hits
  * @param hits
@@ -64,6 +67,92 @@ function buildYHistogram(
 }
 
 /**
+ * Raycast with BFS
+ * Large square divide in 4 until reach gridsize
+ */
+function adaptiveRaycastQueue(
+    scene: THREE.Scene,
+    raycaster: THREE.Raycaster,
+    normalMat: THREE.Matrix3,
+    normalThreshold: number,
+    min: THREE.Vector3,
+    gridSize: number,
+    rayOriginY: number,
+    macroCells: { x: number; z: number; sizeX: number; sizeZ: number }[],
+    allHits: { r: number; c: number; y: number }[],
+    seen: Set<string>
+): number {
+    const origin = new THREE.Vector3();
+    const downDir = new THREE.Vector3(0, -1, 0);
+
+    let queue = macroCells;
+    let pass = 0;
+    let totalRays = 0;
+
+    while (queue.length > 0) {
+        const cellsThisPass = queue.length;
+        console.log(`Pass ${pass} : ${cellsThisPass} rays (grid size ~${queue[0].sizeX.toFixed(2)}m)`);
+        console.time(`    pass ${pass}`);
+
+        const nextQueue: typeof queue = [];
+        let touched = 0;
+
+        for (const cell of queue) {
+            const cx = cell.x + cell.sizeX / 2;
+            const cz = cell.z + cell.sizeZ / 2;
+
+            totalRays++;
+            origin.set(cx, rayOriginY, cz);
+            raycaster.set(origin, downDir);
+            const intersects = raycaster.intersectObject(scene, true);
+
+            const ys: number[] = [];
+            for (const hit of intersects) {
+                if (!hit.face) continue;
+                normalMat.getNormalMatrix(hit.object.matrixWorld);
+                const worldNormal = hit.face.normal.clone().applyMatrix3(normalMat).normalize();
+                if (worldNormal.y > normalThreshold) {
+                    ys.push(hit.point.y);
+                }
+            }
+
+            // empty square
+            if (ys.length === 0) continue;
+
+            touched++;
+
+            if (cell.sizeX <= gridSize && cell.sizeZ <= gridSize) {
+                const r = Math.floor((cz - min.z) / gridSize);
+                const c = Math.floor((cx - min.x) / gridSize);
+                const key = `${r}_${c}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                for (const y of ys) allHits.push({ r, c, y });
+                continue;
+            }
+
+            const halfX = cell.sizeX / 2;
+            const halfZ = cell.sizeZ / 2;
+            nextQueue.push(
+                { x: cell.x, z: cell.z, sizeX: halfX, sizeZ: halfZ },
+                { x: cell.x + halfX, z: cell.z, sizeX: halfX, sizeZ: halfZ },
+                { x: cell.x, z: cell.z + halfZ, sizeX: halfX, sizeZ: halfZ },
+                { x: cell.x + halfX, z: cell.z + halfZ, sizeX: halfX, sizeZ: halfZ }
+            );
+        }
+
+        console.timeEnd(`    pass ${pass}`);
+        console.log(`    -> ${touched}/${cellsThisPass} hits, ${nextQueue.length} sub-cells for next pass`);
+
+        queue = nextQueue;
+        pass++;
+    }
+
+    console.log(`Total : ${totalRays} rays sent in ${pass} passes`);
+    return totalRays;
+}
+
+/**
  * Build the scene map with floor detection
  * @param scene Scene of the 3D world
  * @param config Parameters use during map creation
@@ -94,46 +183,39 @@ export async function buildSceneMap(
     console.log(`Global grid : ${cols}×${rows} = ${totalCells} cells`);
 
     const raycaster = new THREE.Raycaster();
-    const downDir = new THREE.Vector3(0, -1, 0);
     const normalMat = new THREE.Matrix3();
     const rayOriginY = max.y + 1;
 
-    // Global Raycast
+    // Far born to avoid infinite
+    raycaster.far = (rayOriginY - min.y) + gridSize;
+
+    // Global Raycast (adaptative, quadtree)
     console.group('Step 1 - Global raycast');
-    console.time('raycast');
+    console.time('raycast total');
 
     const allHits: { r: number; c: number; y: number }[] = [];
-    let lastLog = Date.now();
+    const seen = new Set<string>();
+    const macroSize = gridSize * MACRO_CELL_MULTIPLIER;
 
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const x = min.x + (c + 0.5) * gridSize;
-            const z = min.z + (r + 0.5) * gridSize;
-
-            raycaster.set(new THREE.Vector3(x, rayOriginY, z), downDir);
-            const intersects = raycaster.intersectObject(scene, true);
-
-            for (const hit of intersects) {
-                if (!hit.face)
-                    continue;
-
-                normalMat.getNormalMatrix(hit.object.matrixWorld);
-                const worldNormal = hit.face.normal.clone().applyMatrix3(normalMat).normalize();
-                if (worldNormal.y > normalThreshold) {
-                    allHits.push({ r, c, y: hit.point.y });
-                }
-            }
-        }
-
-        // LOG
-        if (Date.now() - lastLog > 1000) {
-            console.log(`Raycast… ${Math.floor(r * 100 / rows)}%`);
-            lastLog = Date.now();
+    const macroCells: { x: number; z: number; sizeX: number; sizeZ: number }[] = [];
+    for (let mz = min.z; mz < max.z; mz += macroSize) {
+        const sizeZ = Math.min(macroSize, max.z - mz);
+        for (let mx = min.x; mx < max.x; mx += macroSize) {
+            const sizeX = Math.min(macroSize, max.x - mx);
+            macroCells.push({ x: mx, z: mz, sizeX, sizeZ });
         }
     }
 
-    console.log(`Raycast… 100%`);
-    console.timeEnd('raycast');
+    console.log(`Macro grid : ${macroCells.length} starting cells (${macroSize.toFixed(2)}m)`);
+
+    const totalRays = adaptiveRaycastQueue(
+        scene, raycaster, normalMat, normalThreshold,
+        min, gridSize, rayOriginY,
+        macroCells, allHits, seen
+    );
+
+    console.timeEnd('raycast total');
+    console.log(`${totalRays} rays sent (vs ${totalCells} cells if with brute force)`);
     console.log(`${allHits.length} hits horizontal on ${totalCells} cells`);
     console.groupEnd();
 
