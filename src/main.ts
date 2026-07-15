@@ -10,11 +10,12 @@ import {
 import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
 import { createDebugFloorOverlay } from './debugMinimap.ts';
-import { buildSceneMap } from './minimapBuilder.js';
+import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
 import { createEditMode, createEditModeInputHandler } from './editMode.js';
 import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
 import { commitFloorMove, type MapContext } from './floorAdjust.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
+import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type HistogramHud } from './histogramPanel.js';
 
 // Patch XRWebGLBinding bug
 if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
@@ -69,8 +70,11 @@ const defaultConfig = {
 console.log("Minimap existence check")
 let sceneMap = await loadSceneMapFromFile(MAP_PATH);
 console.log(sceneMap);
+let histogram: HistogramBin[] = [];
 if (!sceneMap) {
-    sceneMap = await buildSceneMap(scene, defaultConfig);
+    const built = await buildSceneMap(scene, defaultConfig);
+    sceneMap = built.map;
+    histogram = built.histogram;
 }
 
 loadingEl.remove();
@@ -100,7 +104,9 @@ async function rebuildMinimap(): Promise<void> {
 
     debugOverlay.dispose();
     disposeFloorMoveVisual();
-    sceneMap = await buildSceneMap(scene, editMode.config);
+    const built = await buildSceneMap(scene, editMode.config);
+    sceneMap = built.map;
+    histogram = built.histogram;
     debugOverlay = createDebugFloorOverlay(scene, sceneMap);
 
     floorState.curFloorIdx = Math.min(floorState.curFloorIdx, sceneMap.levels.length - 1);
@@ -147,6 +153,7 @@ function ensureFloorMoveVisual(): void {
 
 const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
 const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
+const desktopHistogramPanel = createDesktopHistogramPanel();
 
 // Player
 const player = createPlayer(camera);
@@ -224,6 +231,20 @@ renderer.xr.addEventListener('sessionend', () => {
     }
 });
 
+// Histogram HUD on right grip (just to the left of the edit mode config panel)
+let histogramHud: HistogramHud | null = null;
+
+renderer.xr.addEventListener('sessionstart', () => {
+    histogramHud = createHistogramHud(rightGrip);
+});
+
+renderer.xr.addEventListener('sessionend', () => {
+    if (histogramHud) {
+        histogramHud.dispose();
+        histogramHud = null;
+    }
+});
+
 // Input
 function getVRJoystick(): { x: number; y: number } {
     const session = renderer.xr.getSession();
@@ -277,6 +298,17 @@ renderer.setAnimationLoop(() => {
             vrConfigPanel.texture.needsUpdate = true;
         }
     }
+
+    if (histogramHud) {
+        histogramHud.mesh.visible = editMode.active;
+        if (editMode.active) {
+            renderHistogram(histogram, sceneMap!.levels, histogramHud.canvas);
+            histogramHud.texture.needsUpdate = true;
+        }
+    }
+
+    desktopHistogramPanel.setVisible(editMode.active);
+    if (editMode.active) renderHistogram(histogram, sceneMap!.levels, desktopHistogramPanel.canvas);
 
     desktopConfigPanel.sync();
 
