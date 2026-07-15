@@ -37,7 +37,7 @@ dirLight.position.set(3, 10, 10);
 scene.add(dirLight);
 
 // Model
-const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
+const MODEL_PATH = '/models/plant-3.glb';
 const MAP_PATH = "/maps/sceneMap.json";
 const model = await loadGLB(MODEL_PATH);
 scene.add(model);
@@ -57,7 +57,7 @@ console.log(sceneMap);
 if (!sceneMap) {
 
     sceneMap = await buildSceneMap(scene, {
-        gridSize: 1.0,
+        gridSize: 0.01,
         minWalkableArea: 1.0,
         normalThreshold: 0.7,
         voxYThr: 1.0,
