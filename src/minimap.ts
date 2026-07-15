@@ -188,7 +188,9 @@ export function renderMinimap(
         map.levels.forEach((lvl, idx) => {
             const isPreview = idx === floorState.prevFloorIdx;
             const isCurrent = idx === floorState.curFloorIdx;
-            const y = canvasSize / 2 - panelH / 2 + 24 + idx * 28;
+            // floor 0 (lowest) at the bottom
+            const rowFromTop = totalFloors - 1 - idx;
+            const y = canvasSize / 2 - panelH / 2 + 24 + rowFromTop * 28;
 
             if (isPreview) {
                 ctx.fillStyle = 'rgba(255,200,60,0.25)';

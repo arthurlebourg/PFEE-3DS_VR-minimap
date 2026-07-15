@@ -398,7 +398,9 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
     const startY = 36;
 
     map.levels.forEach((level, idx) => {
-        const y = startY + idx * rowH;
+        // floor 0 (lowest) at the bottom
+        const rowFromTop = map.levels.length - 1 - idx;
+        const y = startY + rowFromTop * rowH;
         const isSelected = idx === state.floors.selectedFloorIdx;
 
         if (isSelected) {

@@ -218,7 +218,8 @@ export function createEditModeInputHandler(
             state.floors.isMoving = triggerHeld;
 
             if (!triggerHeld && Math.abs(stickY) > SELECT_THRESHOLD && now - lastSelectAt > SELECT_COOLDOWN_MS) {
-                selectNextFloor(state.floors, levelCount, stickY > 0 ? 1 : -1);
+                // stick up (negative axis value) selects the next floor up
+                selectNextFloor(state.floors, levelCount, stickY < 0 ? 1 : -1);
                 lastSelectAt = now;
             }
 
