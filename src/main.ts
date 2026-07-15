@@ -57,14 +57,14 @@ console.log(sceneMap);
 if (!sceneMap) {
 
     sceneMap = await buildSceneMap(scene, {
-        gridSize: 0.01,
+        gridSize: 1,
         minWalkableArea: 1.0,
         normalThreshold: 0.7,
         voxYThr: 1.0,
         minFloorGap: 0.4,
         histoHeightSize: 0.15,
         minPeakArea: 2,
-    });
+    }, MODEL_PATH);
 
     // disable saving for now
     // saveSceneMapAsFile(sceneMap);

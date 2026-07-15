@@ -71,6 +71,7 @@ function buildYHistogram(
 export async function buildSceneMap(
     scene: THREE.Scene,
     config: MinimapConfig,
+    modelPath: string,
 ): Promise<SceneMap> {
     const {
         gridSize,
@@ -93,44 +94,17 @@ export async function buildSceneMap(
     console.log(`Bounds : X[${min.x.toFixed(2)}, ${max.x.toFixed(2)}]  Y[${min.y.toFixed(2)}, ${max.y.toFixed(2)}]  Z[${min.z.toFixed(2)}, ${max.z.toFixed(2)}]`);
     console.log(`Global grid : ${cols}×${rows} = ${totalCells} cells`);
 
-    const raycaster = new THREE.Raycaster();
-    const downDir = new THREE.Vector3(0, -1, 0);
-    const normalMat = new THREE.Matrix3();
-    const rayOriginY = max.y + 1;
-
-    // Global Raycast
+    // Global Raycast (offloaded to a worker to keep the main thread responsive)
     console.group('Step 1 - Global raycast');
     console.time('raycast');
 
-    const allHits: { r: number; c: number; y: number }[] = [];
-    let lastLog = Date.now();
-
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const x = min.x + (c + 0.5) * gridSize;
-            const z = min.z + (r + 0.5) * gridSize;
-
-            raycaster.set(new THREE.Vector3(x, rayOriginY, z), downDir);
-            const intersects = raycaster.intersectObject(scene, true);
-
-            for (const hit of intersects) {
-                if (!hit.face)
-                    continue;
-
-                normalMat.getNormalMatrix(hit.object.matrixWorld);
-                const worldNormal = hit.face.normal.clone().applyMatrix3(normalMat).normalize();
-                if (worldNormal.y > normalThreshold) {
-                    allHits.push({ r, c, y: hit.point.y });
-                }
-            }
-        }
-
-        // LOG
-        if (Date.now() - lastLog > 1000) {
-            console.log(`Raycast… ${Math.floor(r * 100 / rows)}%`);
-            lastLog = Date.now();
-        }
-    }
+    const worker = new Worker(new URL('./raycastWorker.ts', import.meta.url), { type: 'module' });
+    const allHits = await new Promise<{ r: number; c: number; y: number }[]>((resolve, reject) => {
+        worker.onmessage = e => resolve(e.data);
+        worker.onerror = reject;
+        worker.postMessage({ modelPath, gridSize, normalThreshold });
+    });
+    worker.terminate();
 
     console.log(`Raycast… 100%`);
     console.timeEnd('raycast');
