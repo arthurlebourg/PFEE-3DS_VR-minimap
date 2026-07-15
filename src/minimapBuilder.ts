@@ -66,6 +66,10 @@ function castDown(
         if (_worldNormal.y > normalThreshold) ys.push(hit.point.y);
     }
     return ys;
+/** @typedef HistogramBin one Y-slice of the density histogram */
+export interface HistogramBin {
+    y: number;
+    count: number;
 }
 
 /**
@@ -74,15 +78,15 @@ function castDown(
  * @param sliceSize small cluster Y
  * @param minPeakArea minimal area to define a peak
  * @param gridSize size of a cell
- * @return List of histogram peaks + density
+ * @return the full binned histogram + the detected peaks (candidate floors)
  */
 function buildYHistogram(
     hits: { y: number }[],
     sliceSize: number,
     minPeakArea: number,
     gridSize: number
-): { centerY: number; count: number }[] {
-    if (hits.length === 0) return [];
+): { bins: HistogramBin[]; peaks: { centerY: number; count: number }[] } {
+    if (hits.length === 0) return { bins: [], peaks: [] };
 
     const minY = Math.min(...hits.map(h => h.y));
     const maxY = Math.max(...hits.map(h => h.y));
@@ -102,6 +106,8 @@ function buildYHistogram(
         console.log(`    Y=${y.toFixed(2)}m  [${count.toString().padStart(5)}]  ${bar}`);
     });
     console.groupEnd();
+
+    const bins: HistogramBin[] = histo.map((count, i) => ({ y: minY + (i + 0.5) * sliceSize, count }));
 
     // Local peaks => bigger than neighbour & above surface threshold
     const peaks: { centerY: number; count: number }[] = [];
@@ -124,7 +130,7 @@ function buildYHistogram(
         }
     }
 
-    return peaks;
+    return { bins, peaks };
 }
 
 /**
@@ -229,7 +235,7 @@ function adaptiveRaycastQueue(
 export async function buildSceneMap(
     scene: THREE.Scene,
     config: MinimapConfig,
-): Promise<SceneMap> {
+): Promise<{ map: SceneMap; histogram: HistogramBin[] }> {
     const {
         gridSize,
         minWalkableArea,
@@ -296,7 +302,7 @@ export async function buildSceneMap(
     console.time('histogram');
 
     console.log('Building histogram Y…');
-    const peaks = buildYHistogram(allHits, histoHeightSize, minPeakArea, gridSize);
+    const { bins, peaks } = buildYHistogram(allHits, histoHeightSize, minPeakArea, gridSize);
 
     console.log(`${peaks.length} peaks detected :`);
     peaks.forEach((p, i) => console.log(`    Peak ${i} : Y=${p.centerY.toFixed(3)}m  (${p.count} hits)`));
@@ -396,7 +402,7 @@ export async function buildSceneMap(
 
     console.log('Map built !');
 
-    return {
+    const map: SceneMap = {
         version: CACHE_VERSION,
         sceneBounds: {sceneMinX: min.x, sceneMinZ: min.z},
         bounds: {minX: globalMinX, maxX: globalMaxX, minZ: globalMinZ, maxZ: globalMaxZ},
@@ -405,4 +411,6 @@ export async function buildSceneMap(
         gridSize,
         levels,
     };
+
+    return { map, histogram: bins };
 }
