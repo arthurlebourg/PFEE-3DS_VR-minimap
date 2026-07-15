@@ -58,7 +58,7 @@ Object.assign(loadingEl.style, {
 document.body.appendChild(loadingEl);
 
 const defaultConfig = {
-    gridSize: 1.0,
+    gridSize: 0.2,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
     voxYThr: 1.0,

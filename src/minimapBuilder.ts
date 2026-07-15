@@ -6,7 +6,7 @@ import {buildWalkableGrid, pickSpawn} from './minimapUtils.js';
 const CACHE_VERSION = 1;
 
 // Globbing grid size = gridSize * factor
-const MACRO_CELL_MULTIPLIER = 4;
+const MACRO_CELL_MULTIPLIER = 5;
 
 // Extensions BVH, once when loading
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -66,6 +66,8 @@ function castDown(
         if (_worldNormal.y > normalThreshold) ys.push(hit.point.y);
     }
     return ys;
+}
+
 /** @typedef HistogramBin one Y-slice of the density histogram */
 export interface HistogramBin {
     y: number;
