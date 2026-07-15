@@ -324,7 +324,7 @@ window.addEventListener('resize', () => {
 
 // Display debug overlay
 window.addEventListener('keydown', e => {
-    if (e.key === 'd' || e.key === 'D') debugOverlay.toggle();
+    if (e.key === 'h' || e.key === 'H') debugOverlay.toggle();
     if (e.key === 'e' || e.key === 'E') {
         editMode.active = !editMode.active;
         desktopConfigPanel.sync();
