@@ -74,7 +74,7 @@ export function createDebugFloorOverlay(
  * @param color
  * @param opacity
  */
-function buildWalkableMesh(
+export function buildWalkableMesh(
     map: SceneMap,
     walkable: boolean[][],
     y: number,
