@@ -311,12 +311,28 @@ export async function buildSceneMap(
 
     const rawLevels: FloorLevel[] = [];
 
+    // Assign each hit to its nearest peak
+    const hitPeakIndex = allHits.map(hit => {
+        let best = -1;
+        let bestDist = Infinity;
+        for (let pi = 0; pi < peaks.length; pi++) {
+            const d = Math.abs(hit.y - peaks[pi].centerY);
+            if (d < bestDist) {
+                bestDist = d;
+                best = pi;
+            }
+        }
+        return bestDist <= voxYThr ? best : -1;
+    });
+
     for (let pi = 0; pi < peaks.length; pi++) {
         const peak = peaks[pi];
         console.group(`    Peak ${pi} Y=${peak.centerY.toFixed(2)}m`);
 
+        const peakHits = allHits.filter((_, idx) => hitPeakIndex[idx] === pi);
+
         const {walkable, bestComponent} = buildWalkableGrid(
-            allHits, peak.centerY, voxYThr, minCells, rows, cols
+            peakHits, peak.centerY, voxYThr, minCells, rows, cols
         );
 
         if (bestComponent.length === 0) {
@@ -326,7 +342,6 @@ export async function buildSceneMap(
         }
 
         // LOG INFO
-        const peakHits = allHits.filter(h => Math.abs(h.y - peak.centerY) <= voxYThr);
         const tMinX = Math.min(...peakHits.map(h => min.x + h.c * gridSize));
         const tMaxX = Math.max(...peakHits.map(h => min.x + (h.c + 1) * gridSize));
         const tMinZ = Math.min(...peakHits.map(h => min.z + h.r * gridSize));
