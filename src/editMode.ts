@@ -24,6 +24,10 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'minFloorGap', label: 'Min floor gap', min: 0.05, max: 2.0, step: 0.01 },
     { key: 'histoHeightSize', label: 'Histogram slice', min: 0.02, max: 0.5, step: 0.01 },
     { key: 'minPeakArea', label: 'Min peak area', min: 0.5, max: 20, step: 0.5 },
+    // Wall detection params
+    { key: 'wallScanHeight', label: 'Wall scan height', min: 0.1, max: 3.0, step: 0.05 },
+    { key: 'wallNormalThreshold', label: 'Wall normal thr.', min: 0.05, max: 0.9, step: 0.05 },
+    { key: 'wallRayLength', label: 'Wall ray length', min: 0.05, max: 1.0, step: 0.05 },
 ];
 
 export type EditPanel = 'config' | 'floors';

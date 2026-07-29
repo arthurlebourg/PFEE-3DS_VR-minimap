@@ -5,6 +5,8 @@ const FLOOR_COLORS: readonly number[] = [0x4488ff, 0x44ff88, 0xff8844, 0xff44aa,
 const FLOOR_OPACITY = 0.5;
 const SUBLEVEL_OPACITY = 0.25;
 const Y_LIFT = 0.05; // slight elevation to be visible
+const WALL_HEIGHT = 2.2; // visual height of wall quads in the debug overlay
+const WALL_OPACITY = 0.55;
 
 /**
  * @typedef DebugFloorOverlay
@@ -23,7 +25,7 @@ export function createDebugFloorOverlay(
     map: SceneMap,
 ): DebugFloorOverlay {
     const group = new THREE.Group();
-    group.name  = 'debug-floor-overlay';
+    group.name = 'debug-floor-overlay';
 
     const disposables: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = [];
 
@@ -32,14 +34,22 @@ export function createDebugFloorOverlay(
 
         // Main walkable grid
         const mainMesh = buildWalkableMesh(map, level.walkable, level.floorY + Y_LIFT, color, FLOOR_OPACITY);
-        mainMesh.name  = `floor-${level.id}-main`;
+        mainMesh.name = `floor-${level.id}-main`;
         group.add(mainMesh);
         disposables.push(mainMesh.geometry, mainMesh.material as THREE.Material);
+
+        // Wall mesh
+        if (level.walls && level.walls.length > 0) {
+            const wallMesh = buildWallMesh(map, level.walkable, level.walls, level.floorY + Y_LIFT, color, WALL_OPACITY);
+            wallMesh.name = `floor-${level.id}-walls`;
+            group.add(wallMesh);
+            disposables.push(wallMesh.geometry, wallMesh.material as THREE.Material);
+        }
 
         // Sub-levels (same color, more transparent)
         level.subLevels.forEach((sub, si) => {
             const subMesh = buildWalkableMesh(map, sub.walkable, sub.absoluteY + Y_LIFT, color, SUBLEVEL_OPACITY);
-            subMesh.name  = `floor-${level.id}-sub-${si}`;
+            subMesh.name = `floor-${level.id}-sub-${si}`;
             group.add(subMesh);
             disposables.push(subMesh.geometry, subMesh.material as THREE.Material);
         });
@@ -67,6 +77,97 @@ export function createDebugFloorOverlay(
 }
 
 /**
+ * Create vertical quad meshes for detected walls in the debug 3D overlay.
+ * Each walkable cell can have up to 4 wall faces (N/E/S/W) drawn as semi-transparent quads.
+ *
+ * Bitmask: bit 0 = North (−Z), bit 1 = East (+X), bit 2 = South (+Z), bit 3 = West (−X)
+ *
+ * @param map SceneMap
+ * @param walkable Walkable grid for this floor
+ * @param walls Wall bitmask grid (same dimensions as walkable)
+ * @param yBase Y position of the floor (bottom of the wall quad)
+ * @param color Wall color (hex)
+ * @param opacity Opacity of the wall material
+ */
+export function buildWallMesh(
+    map: SceneMap,
+    walkable: boolean[][],
+    walls: number[][],
+    yBase: number,
+    color: number,
+    opacity: number,
+): THREE.Mesh {
+    const gs = map.gridSize;
+    const { sceneMinX, sceneMinZ } = map.sceneBounds;
+    const rows = walls.length;
+    const cols = walls[0]?.length ?? 0;
+    const yTop = yBase + WALL_HEIGHT;
+
+    const positions: number[] = [];
+    const indices: number[] = [];
+
+    // For each face: p0/p1 = bottom edge endpoints, p2/p3 = top edge endpoints
+    // North (−Z): z = cz − gs/2, x from cx−gs/2 to cx+gs/2
+    // East  (+X): x = cx + gs/2, z from cz−gs/2 to cz+gs/2
+    // South (+Z): z = cz + gs/2, x from cx+gs/2 to cx−gs/2
+    // West  (−X): x = cx − gs/2, z from cz+gs/2 to cz−gs/2
+    const faceEdges: { bit: number; ax0: number; az0: number; ax1: number; az1: number }[] = [
+        { bit: 1, ax0: -0.5, az0: -0.5, ax1: 0.5, az1: -0.5 }, // N
+        { bit: 2, ax0: 0.5, az0: -0.5, ax1: 0.5, az1: 0.5 }, // E
+        { bit: 4, ax0: 0.5, az0: 0.5, ax1: -0.5, az1: 0.5 }, // S
+        { bit: 8, ax0: -0.5, az0: 0.5, ax1: -0.5, az1: -0.5 }, // W
+    ];
+
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const mask = walls[r]?.[c] ?? 0;
+            if (mask === 0) continue;
+            if (!walkable[r]?.[c]) continue; // safety: only on walkable cells
+
+            const cx = sceneMinX + (c + 0.5) * gs;
+            const cz = sceneMinZ + (r + 0.5) * gs;
+
+            for (const { bit, ax0, az0, ax1, az1 } of faceEdges) {
+                if (!(mask & bit)) continue;
+
+                const x0 = cx + ax0 * gs;
+                const z0 = cz + az0 * gs;
+                const x1 = cx + ax1 * gs;
+                const z1 = cz + az1 * gs;
+
+                const base = positions.length / 3;
+                positions.push(
+                    x0, yBase, z0,
+                    x1, yBase, z1,
+                    x1, yTop, z1,
+                    x0, yTop, z0,
+                );
+                indices.push(
+                    base, base + 1, base + 2,
+                    base, base + 2, base + 3,
+                );
+            }
+        }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    if (positions.length > 0) {
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.setIndex(indices);
+        geo.computeVertexNormals();
+    }
+
+    const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+    });
+    return new THREE.Mesh(geo, mat);
+}
+
+/**
  * Create a mesh representing the walkable area of a floor or sub-level in the 3D scene
  * @param map
  * @param walkable
@@ -88,7 +189,7 @@ export function buildWalkableMesh(
     const cols = walkable[0]?.length ?? 0;
 
     const positions: number[] = [];
-    const indices:   number[] = [];
+    const indices: number[] = [];
 
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
@@ -138,20 +239,20 @@ function buildBoundsWireframe(level: FloorLevel, color: number): THREE.LineSegme
     // 12 edges in a box = 24 points
     const pts = [
         // bottom
-        minX, yBot, minZ,   maxX, yBot, minZ,
-        maxX, yBot, minZ,   maxX, yBot, maxZ,
-        maxX, yBot, maxZ,   minX, yBot, maxZ,
-        minX, yBot, maxZ,   minX, yBot, minZ,
+        minX, yBot, minZ, maxX, yBot, minZ,
+        maxX, yBot, minZ, maxX, yBot, maxZ,
+        maxX, yBot, maxZ, minX, yBot, maxZ,
+        minX, yBot, maxZ, minX, yBot, minZ,
         // top
-        minX, yTop, minZ,   maxX, yTop, minZ,
-        maxX, yTop, minZ,   maxX, yTop, maxZ,
-        maxX, yTop, maxZ,   minX, yTop, maxZ,
-        minX, yTop, maxZ,   minX, yTop, minZ,
+        minX, yTop, minZ, maxX, yTop, minZ,
+        maxX, yTop, minZ, maxX, yTop, maxZ,
+        maxX, yTop, maxZ, minX, yTop, maxZ,
+        minX, yTop, maxZ, minX, yTop, minZ,
         // vertical edges
-        minX, yBot, minZ,   minX, yTop, minZ,
-        maxX, yBot, minZ,   maxX, yTop, minZ,
-        maxX, yBot, maxZ,   maxX, yTop, maxZ,
-        minX, yBot, maxZ,   minX, yTop, maxZ,
+        minX, yBot, minZ, minX, yTop, minZ,
+        maxX, yBot, minZ, maxX, yTop, minZ,
+        maxX, yBot, maxZ, maxX, yTop, maxZ,
+        minX, yBot, maxZ, minX, yTop, maxZ,
     ];
 
     const geo = new THREE.BufferGeometry();

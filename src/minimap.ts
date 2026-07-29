@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type {FloorManagerState} from './floorManager.js';
 
-const CACHE_VERSION = 7;
+const CACHE_VERSION = 8;
 
 // Types
 
@@ -27,11 +27,21 @@ export interface SubLevel {
  * @prop spawnPoint Potential player starting point
  * @prop bounds XZ min-max bounds
  */
+/**
+ * Wall bitmask per cell (bit 0 = North/−Z, bit 1 = East/+X, bit 2 = South/+Z, bit 3 = West/−X)
+ */
+export const WALL_N = 1;
+export const WALL_E = 2;
+export const WALL_S = 4;
+export const WALL_W = 8;
+
 export interface FloorLevel {
     id: number;
     floorY: number;
     ceilingY: number;
     walkable: boolean[][];
+    /** Wall bitmask per cell (WALL_N | WALL_E | WALL_S | WALL_W). Populated after buildSceneMap. */
+    walls: number[][];
     subLevels: SubLevel[];
     spawnPoint: { x: number; y: number; z: number };
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -65,6 +75,9 @@ export interface SceneMap {
  * @prop minFloorGap gap minimal between 2 floors
  * @prop histoHeightSize Y slice thickness for histogram
  * @prop minPeakArea minimal area to define a peak
+ * @prop wallScanHeight Height above floorY at which horizontal rays are cast for wall detection
+ * @prop wallNormalThreshold Max |normal.y| to classify a surface as a wall (lower = more vertical)
+ * @prop wallRayLength Maximum length of horizontal rays for wall detection
  */
 export interface MinimapConfig {
     gridSize: number;
@@ -74,6 +87,9 @@ export interface MinimapConfig {
     minFloorGap: number;
     histoHeightSize: number;
     minPeakArea: number;
+    wallScanHeight: number;
+    wallNormalThreshold: number;
+    wallRayLength: number;
 }
 
 // Save floor mapping
@@ -160,6 +176,34 @@ export function renderMinimap(
         for (let c = 0; c < cols; c++)
             if (floor.walkable[r][c])
                 ctx.fillRect(offsetX + c * scale, offsetZ + r * scale, scale, scale);
+
+    // Wall segments
+    if (floor.walls && !floorState?.triggerHeld) {
+        const wallAlpha = floorState ? '0.9' : '0.9';
+        ctx.strokeStyle = `rgba(220, 220, 255, ${wallAlpha})`;
+        ctx.lineWidth = Math.max(1, scale * 0.25);
+        ctx.lineCap = 'round';
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const mask = floor.walls[r]?.[c] ?? 0;
+                if (mask === 0) continue;
+                const x0 = offsetX + c * scale;
+                const z0 = offsetZ + r * scale;
+                const x1 = x0 + scale;
+                const z1 = z0 + scale;
+                ctx.beginPath();
+                // North (−Z) : top edge
+                if (mask & 1) { ctx.moveTo(x0, z0); ctx.lineTo(x1, z0); }
+                // East (+X)  : right edge
+                if (mask & 2) { ctx.moveTo(x1, z0); ctx.lineTo(x1, z1); }
+                // South (+Z) : bottom edge
+                if (mask & 4) { ctx.moveTo(x0, z1); ctx.lineTo(x1, z1); }
+                // West (−X)  : left edge
+                if (mask & 8) { ctx.moveTo(x0, z0); ctx.lineTo(x0, z1); }
+                ctx.stroke();
+            }
+        }
+    }
 
     ctx.fillStyle = `rgba(80, 140, 220, ${mapAlpha})`;
     for (const sub of floor.subLevels) {

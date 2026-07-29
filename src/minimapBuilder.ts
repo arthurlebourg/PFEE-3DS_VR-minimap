@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import {computeBoundsTree, disposeBoundsTree, acceleratedRaycast} from 'three-mesh-bvh';
-import type {SceneMap, FloorLevel, MinimapConfig} from './minimap.js';
-import {buildWalkableGrid, pickSpawn} from './minimapUtils.js';
+import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
+import type { SceneMap, FloorLevel, MinimapConfig } from './minimap.js';
+import { buildWalkableGrid, pickSpawn } from './minimapUtils.js';
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 8;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
@@ -75,6 +75,107 @@ export interface HistogramBin {
 }
 
 /**
+ * Cast a horizontal ray from (x, y, z) in direction (dx, 0, dz) and return true
+ * if a wall surface is hit within wallRayLength.
+ * A surface is a "wall" when its world normal is nearly horizontal (|normal.y| < wallNormalThreshold).
+ */
+function castHorizontal(
+    scene: THREE.Scene,
+    raycaster: THREE.Raycaster,
+    origin: THREE.Vector3,
+    dir: THREE.Vector3,
+    wallNormalThreshold: number,
+    wallRayLength: number,
+    x: number,
+    y: number,
+    z: number,
+): boolean {
+    origin.set(x, y, z);
+    raycaster.set(origin, dir);
+    const intersects = raycaster.intersectObject(scene, true);
+
+    for (const hit of intersects) {
+        if (hit.distance > wallRayLength) break;
+        if (!hit.face) continue;
+
+        let mat = normalMatrixCache.get(hit.object);
+        if (!mat) {
+            mat = new THREE.Matrix3();
+            mat.getNormalMatrix(hit.object.matrixWorld);
+            normalMatrixCache.set(hit.object, mat);
+        }
+
+        _worldNormal.copy(hit.face.normal).applyMatrix3(mat).normalize();
+        if (Math.abs(_worldNormal.y) < wallNormalThreshold) return true;
+    }
+    return false;
+}
+
+/**
+ * Build a wall bitmask grid for a floor level.
+ * For each walkable cell, fire 4 horizontal rays (N/E/S/W) and mark the corresponding
+ * face bit when a wall is detected within wallRayLength.
+ *
+ * Bitmask: bit 0 = North (−Z), bit 1 = East (+X), bit 2 = South (+Z), bit 3 = West (−X)
+ *
+ * @param scene THREE.Scene
+ * @param walkable Walkable grid for this floor level
+ * @param floorY Y position of the floor
+ * @param sceneMin Scene bounding box minimum (THREE.Vector3)
+ * @param config MinimapConfig (wallScanHeight, wallNormalThreshold, wallRayLength, gridSize)
+ * @returns 2D grid of wall bitmasks (same dimensions as walkable)
+ */
+function buildWallGrid(
+    scene: THREE.Scene,
+    walkable: boolean[][],
+    floorY: number,
+    sceneMin: THREE.Vector3,
+    config: MinimapConfig,
+): number[][] {
+    const { gridSize, wallScanHeight, wallNormalThreshold, wallRayLength } = config;
+    const rows = walkable.length;
+    const cols = walkable[0]?.length ?? 0;
+
+    const walls: number[][] = Array.from({ length: rows }, () => new Array(cols).fill(0));
+
+    const origin = new THREE.Vector3();
+    const raycaster = new THREE.Raycaster();
+    raycaster.far = wallRayLength + 0.01;
+    raycaster.firstHitOnly = false;
+
+    const scanY = floorY + wallScanHeight;
+
+    // Pre-built direction vectors for N / E / S / W
+    const DIRS: { dx: number; dz: number; bit: number }[] = [
+        { dx: 0, dz: -1, bit: 1 }, // North (−Z)
+        { dx: 1, dz: 0, bit: 2 }, // East  (+X)
+        { dx: 0, dz: 1, bit: 4 }, // South (+Z)
+        { dx: -1, dz: 0, bit: 8 }, // West  (−X)
+    ];
+    const dirVec = new THREE.Vector3();
+
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            if (!walkable[r][c]) continue;
+
+            const cx = sceneMin.x + (c + 0.5) * gridSize;
+            const cz = sceneMin.z + (r + 0.5) * gridSize;
+
+            let mask = 0;
+            for (const { dx, dz, bit } of DIRS) {
+                dirVec.set(dx, 0, dz);
+                if (castHorizontal(scene, raycaster, origin, dirVec, wallNormalThreshold, wallRayLength, cx, scanY, cz)) {
+                    mask |= bit;
+                }
+            }
+            walls[r][c] = mask;
+        }
+    }
+
+    return walls;
+}
+
+/**
  * Create a histogram of Y hits
  * @param hits
  * @param sliceSize small cluster Y
@@ -124,10 +225,10 @@ function buildYHistogram(
             if (last && minY + (i + 0.5) * sliceSize - last.centerY < sliceSize * 2) {
                 // Keep the bigger one
                 if (histo[i] > last.count) {
-                    peaks[peaks.length - 1] = {centerY: minY + (i + 0.5) * sliceSize, count: histo[i]};
+                    peaks[peaks.length - 1] = { centerY: minY + (i + 0.5) * sliceSize, count: histo[i] };
                 }
             } else {
-                peaks.push({centerY: minY + (i + 0.5) * sliceSize, count: histo[i]});
+                peaks.push({ centerY: minY + (i + 0.5) * sliceSize, count: histo[i] });
             }
         }
     }
@@ -171,7 +272,7 @@ function adaptiveRaycastQueue(
         let touched = 0;
 
         for (const cell of queue) {
-            const {rowStart, rowEnd, colStart, colEnd} = cell;
+            const { rowStart, rowEnd, colStart, colEnd } = cell;
 
             const x0 = min.x + colStart * gridSize;
             const x1 = min.x + colEnd * gridSize;
@@ -196,7 +297,7 @@ function adaptiveRaycastQueue(
                 const key = `${r}_${c}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
-                for (const y of ys) allHits.push({r, c, y});
+                for (const y of ys) allHits.push({ r, c, y });
                 continue;
             }
 
@@ -213,7 +314,7 @@ function adaptiveRaycastQueue(
 
             for (const [rS, rE] of rowRanges) {
                 for (const [cS, cE] of colRanges) {
-                    nextQueue.push({rowStart: rS, rowEnd: rE, colStart: cS, colEnd: cE});
+                    nextQueue.push({ rowStart: rS, rowEnd: rE, colStart: cS, colEnd: cE });
                 }
             }
         }
@@ -249,7 +350,7 @@ export async function buildSceneMap(
     } = config;
 
     const box = new THREE.Box3().setFromObject(scene);
-    const {min, max} = box;
+    const { min, max } = box;
     const cols = Math.ceil((max.x - min.x) / gridSize);
     const rows = Math.ceil((max.z - min.z) / gridSize);
     const totalCells = rows * cols;
@@ -282,7 +383,7 @@ export async function buildSceneMap(
         const r1 = Math.min(r0 + MACRO_CELL_MULTIPLIER, rows);
         for (let c0 = 0; c0 < cols; c0 += MACRO_CELL_MULTIPLIER) {
             const c1 = Math.min(c0 + MACRO_CELL_MULTIPLIER, cols);
-            macroCells.push({rowStart: r0, rowEnd: r1, colStart: c0, colEnd: c1});
+            macroCells.push({ rowStart: r0, rowEnd: r1, colStart: c0, colEnd: c1 });
         }
     }
 
@@ -339,7 +440,7 @@ export async function buildSceneMap(
 
         const peakHits = allHits.filter((_, idx) => hitPeakIndex[idx] === pi);
 
-        const {walkable, bestComponent} = buildWalkableGrid(
+        const { walkable, bestComponent } = buildWalkableGrid(
             peakHits, peak.centerY, voxYThr, minCells, rows, cols
         );
 
@@ -368,9 +469,10 @@ export async function buildSceneMap(
             floorY: peak.centerY,
             ceilingY: peaks[pi + 1]?.centerY ?? Infinity,
             walkable,
+            walls: [], // populated in Step 4
             subLevels: [],
             spawnPoint,
-            bounds: {minX: tMinX, maxX: tMaxX, minZ: tMinZ, maxZ: tMaxZ},
+            bounds: { minX: tMinX, maxX: tMaxX, minZ: tMinZ, maxZ: tMaxZ },
         });
     }
 
@@ -389,9 +491,25 @@ export async function buildSceneMap(
                 walkable: level.walkable,
             });
         } else {
-            levels.push({...level, id: levels.length});
+            levels.push({ ...level, id: levels.length });
         }
     }
+
+    // Step 4 - Wall detection
+    console.group('Step 4 - Wall detection');
+    console.time('walls');
+    console.log('Building wall grids…');
+
+    for (const level of levels) {
+        console.time(`    floor ${level.id}`);
+        level.walls = buildWallGrid(scene, level.walkable, level.floorY, min, config);
+        const wallCount = level.walls.flat().filter(v => v !== 0).length;
+        console.log(`    Floor ${level.id}: ${wallCount} cells with wall(s)`);
+        console.timeEnd(`    floor ${level.id}`);
+    }
+
+    console.timeEnd('walls');
+    console.groupEnd();
 
     // Global bounds
     const globalMinX = Math.min(...levels.map(l => l.bounds.minX));
@@ -406,8 +524,8 @@ export async function buildSceneMap(
 
     const map: SceneMap = {
         version: CACHE_VERSION,
-        sceneBounds: {sceneMinX: min.x, sceneMinZ: min.z},
-        bounds: {minX: globalMinX, maxX: globalMaxX, minZ: globalMinZ, maxZ: globalMaxZ},
+        sceneBounds: { sceneMinX: min.x, sceneMinZ: min.z },
+        bounds: { minX: globalMinX, maxX: globalMaxX, minZ: globalMinZ, maxZ: globalMaxZ },
         cols: Math.ceil((globalMaxX - globalMinX) / gridSize),
         rows: Math.ceil((globalMaxZ - globalMinZ) / gridSize),
         gridSize,
