@@ -65,6 +65,10 @@ const defaultConfig = {
     minFloorGap: 0.4,
     histoHeightSize: 0.15,
     minPeakArea: 2,
+    // Wall detection
+    wallScanHeight: 1.0, // metres above floorY where horizontal rays are fired
+    wallNormalThreshold: 0.3, // |normal.y| < this => wall (0 = perfectly vertical only)
+    wallRayLength: 0.25, // max ray length (≈ gridSize * 1.25)
 };
 
 console.log("Minimap existence check")
