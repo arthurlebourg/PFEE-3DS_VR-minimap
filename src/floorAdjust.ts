@@ -72,16 +72,16 @@ export function nudgeHorizontal(state: FloorAdjustState, dCells: { x: number; z:
     state.previewDelta.z += dCells.z * gridSize;
 }
 
-function shiftGrid(grid: boolean[][], dRows: number, dCols: number): boolean[][] {
+function shiftGrid<T>(grid: T[][], dRows: number, dCols: number, empty: T): T[][] {
     const rows = grid.length;
     const cols = grid[0]?.length ?? 0;
-    const result: boolean[][] = Array.from({ length: rows }, () => new Array(cols).fill(false));
+    const result: T[][] = Array.from({ length: rows }, () => new Array(cols).fill(empty));
 
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-            if (!grid[r][c]) continue;
+            if (grid[r][c] === empty) continue;
             const nr = r + dRows, nc = c + dCols;
-            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) result[nr][nc] = true;
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) result[nr][nc] = grid[r][c];
         }
     }
     return result;
@@ -112,8 +112,14 @@ export function commitFloorMove(state: FloorAdjustState, level: FloorLevel, grid
         level.bounds.maxZ += dRows * gridSize;
         level.spawnPoint.x += dCols * gridSize;
         level.spawnPoint.z += dRows * gridSize;
-        level.walkable = shiftGrid(level.walkable, dRows, dCols);
-        for (const sub of level.subLevels) sub.walkable = shiftGrid(sub.walkable, dRows, dCols);
+        level.walkable = shiftGrid(level.walkable, dRows, dCols, false);
+        level.walls = shiftGrid(level.walls, dRows, dCols, 0);
+        level.roomIds = shiftGrid(level.roomIds, dRows, dCols, -1);
+        for (const room of level.rooms) {
+            room.center.x += dCols * gridSize;
+            room.center.z += dRows * gridSize;
+        }
+        for (const sub of level.subLevels) sub.walkable = shiftGrid(sub.walkable, dRows, dCols, false);
     }
 
     cancelPreview(state);

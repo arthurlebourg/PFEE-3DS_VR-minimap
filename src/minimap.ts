@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import type {FloorManagerState} from './floorManager.js';
+import { roomColorCss, NO_ROOM, type Room } from './roomSegmentation.js';
 
-const CACHE_VERSION = 8;
+const CACHE_VERSION = 9;
 
 // Types
 
@@ -42,6 +43,9 @@ export interface FloorLevel {
     walkable: boolean[][];
     /** Wall bitmask per cell (WALL_N | WALL_E | WALL_S | WALL_W). Populated after buildSceneMap. */
     walls: number[][];
+    /** Room id per cell (NO_ROOM = -1 if none). Populated after buildSceneMap. */
+    roomIds: number[][];
+    rooms: Room[];
     subLevels: SubLevel[];
     spawnPoint: { x: number; y: number; z: number };
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -78,6 +82,8 @@ export interface SceneMap {
  * @prop wallScanHeight Height above floorY at which horizontal rays are cast for wall detection
  * @prop wallNormalThreshold Max |normal.y| to classify a surface as a wall (lower = more vertical)
  * @prop wallRayLength Maximum length of horizontal rays for wall detection
+ * @prop doorWidth Openings narrower than this separate two rooms (room segmentation)
+ * @prop minRoomArea Rooms smaller than this are merged into a neighbour room
  */
 export interface MinimapConfig {
     gridSize: number;
@@ -90,6 +96,8 @@ export interface MinimapConfig {
     wallScanHeight: number;
     wallNormalThreshold: number;
     wallRayLength: number;
+    doorWidth: number;
+    minRoomArea: number;
 }
 
 // Save floor mapping
@@ -171,11 +179,17 @@ export function renderMinimap(
     // transparency
     const mapAlpha = floorState?.triggerHeld ? '0.35' : '0.85';
 
-    ctx.fillStyle = `rgba(80, 180, 120, ${mapAlpha})`;
+    // One color per room (grey for cells outside any room, green if segmentation is missing)
+    const hasRooms = (floor.rooms?.length ?? 0) > 0;
+    const defaultFill = hasRooms ? `rgba(119, 119, 119, ${mapAlpha})` : `rgba(80, 180, 120, ${mapAlpha})`;
+    const roomFills = (floor.rooms ?? []).map(room => roomColorCss(room.id, parseFloat(mapAlpha)));
     for (let r = 0; r < rows; r++)
         for (let c = 0; c < cols; c++)
-            if (floor.walkable[r][c])
+            if (floor.walkable[r][c]) {
+                const roomId = floor.roomIds?.[r]?.[c] ?? NO_ROOM;
+                ctx.fillStyle = roomFills[roomId] ?? defaultFill;
                 ctx.fillRect(offsetX + c * scale, offsetZ + r * scale, scale, scale);
+            }
 
     // Wall segments
     if (floor.walls && !floorState?.triggerHeld) {

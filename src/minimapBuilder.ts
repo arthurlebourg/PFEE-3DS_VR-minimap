@@ -2,8 +2,9 @@ import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import type { SceneMap, FloorLevel, MinimapConfig } from './minimap.js';
 import { buildWalkableGrid, pickSpawn } from './minimapUtils.js';
+import { segmentRooms } from './roomSegmentation.js';
 
-const CACHE_VERSION = 8;
+const CACHE_VERSION = 9;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
@@ -470,6 +471,8 @@ export async function buildSceneMap(
             ceilingY: peaks[pi + 1]?.centerY ?? Infinity,
             walkable,
             walls: [], // populated in Step 4
+            roomIds: [], // populated in Step 5
+            rooms: [],
             subLevels: [],
             spawnPoint,
             bounds: { minX: tMinX, maxX: tMaxX, minZ: tMinZ, maxZ: tMaxZ },
@@ -509,6 +512,22 @@ export async function buildSceneMap(
     }
 
     console.timeEnd('walls');
+    console.groupEnd();
+
+    // Step 5 - Room segmentation
+    console.group('Step 5 - Room segmentation');
+    console.time('rooms');
+
+    for (const level of levels) {
+        const { roomIds, rooms } = segmentRooms(
+            level.walkable, level.walls, gridSize, min.x, min.z, config.doorWidth, config.minRoomArea
+        );
+        level.roomIds = roomIds;
+        level.rooms = rooms;
+        console.log(`    Floor ${level.id}: ${rooms.length} rooms (${rooms.map(r => r.area.toFixed(1) + 'm²').join(', ')})`);
+    }
+
+    console.timeEnd('rooms');
     console.groupEnd();
 
     // Global bounds

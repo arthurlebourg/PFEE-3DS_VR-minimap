@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { SceneMap, FloorLevel } from './minimap.js';
+import { roomColorHex, NO_ROOM_COLOR } from './roomSegmentation.js';
 
 const FLOOR_COLORS: readonly number[] = [0x4488ff, 0x44ff88, 0xff8844, 0xff44aa, 0xaaff44, 0xaa44ff, 0x44ffff, 0xffee44];
 const FLOOR_OPACITY = 0.5;
@@ -32,8 +33,8 @@ export function createDebugFloorOverlay(
     map.levels.forEach((level, idx) => {
         const color = FLOOR_COLORS[idx % FLOOR_COLORS.length];
 
-        // Main walkable grid
-        const mainMesh = buildWalkableMesh(map, level.walkable, level.floorY + Y_LIFT, color, FLOOR_OPACITY);
+        // Main walkable grid (colored per room when segmentation is available)
+        const mainMesh = buildWalkableMesh(map, level.walkable, level.floorY + Y_LIFT, color, FLOOR_OPACITY, level.roomIds);
         mainMesh.name = `floor-${level.id}-main`;
         group.add(mainMesh);
         disposables.push(mainMesh.geometry, mainMesh.material as THREE.Material);
@@ -172,8 +173,9 @@ export function buildWallMesh(
  * @param map
  * @param walkable
  * @param y Y position of the mesh
- * @param color
+ * @param color Color of every cell (ignored when roomIds is given)
  * @param opacity
+ * @param roomIds Optional room id per cell => each room gets its own color
  */
 export function buildWalkableMesh(
     map: SceneMap,
@@ -181,6 +183,7 @@ export function buildWalkableMesh(
     y: number,
     color: number,
     opacity: number,
+    roomIds?: number[][],
 ): THREE.Mesh {
     const gs = map.gridSize;
     const half = gs * 0.49;  // small gap between tiles
@@ -189,11 +192,20 @@ export function buildWalkableMesh(
     const cols = walkable[0]?.length ?? 0;
 
     const positions: number[] = [];
+    const colors: number[] = [];
     const indices: number[] = [];
+    const useRooms = !!roomIds && roomIds.length > 0;
+    const cellColor = new THREE.Color();
 
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
             if (!walkable[r][c]) continue;
+
+            if (useRooms) {
+                const roomId = roomIds![r]?.[c] ?? -1;
+                cellColor.setHex(roomId >= 0 ? roomColorHex(roomId) : NO_ROOM_COLOR);
+                for (let v = 0; v < 4; v++) colors.push(cellColor.r, cellColor.g, cellColor.b);
+            }
 
             const cx = sceneMinX + (c + 0.5) * gs;
             const cz = sceneMinZ + (r + 0.5) * gs;
@@ -215,11 +227,13 @@ export function buildWalkableMesh(
     const geo = new THREE.BufferGeometry();
     if (positions.length > 0) {
         geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        if (useRooms) geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
         geo.setIndex(indices);
     }
 
     const mat = new THREE.MeshBasicMaterial({
-        color,
+        color: useRooms ? 0xffffff : color,
+        vertexColors: useRooms,
         transparent: true,
         opacity,
         side: THREE.DoubleSide,
