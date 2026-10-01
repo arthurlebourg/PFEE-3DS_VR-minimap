@@ -61,7 +61,7 @@ const defaultConfig = {
     gridSize: 0.2,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
-    voxYThr: 1.0,
+    voxYThr: 0.35,
     minFloorGap: 0.4,
     histoHeightSize: 0.15,
     minPeakArea: 2,
@@ -69,6 +69,12 @@ const defaultConfig = {
     wallScanHeight: 1.0, // metres above floorY where horizontal rays are fired
     wallNormalThreshold: 0.3, // |normal.y| < this => wall (0 = perfectly vertical only)
     wallRayLength: 0.25, // max ray length (≈ gridSize * 1.25)
+    // Ground variation connectors
+    minStairArea: 0.15, // m², filters out single-cell raycast noise
+    maxStairArea: 10, // m², > treat as sub-level, not staircase
+    stairMaxStepRise: 0.4, // m, max Y rise accepted per grid cell while climbing
+    stairFlatTolerance: 0.03, // m, |deltaY| under this still counts as a flat step
+    maxLandingRun: 1.2, // m, max consecutive flat run before considering that's a dead end
 };
 
 console.log("Minimap existence check")

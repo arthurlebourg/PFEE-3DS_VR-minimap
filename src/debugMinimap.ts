@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { SceneMap, FloorLevel } from './minimap.js';
+import type { SceneMap, FloorLevel, StairConnector } from './minimap.js';
 
 const FLOOR_COLORS: readonly number[] = [0x4488ff, 0x44ff88, 0xff8844, 0xff44aa, 0xaaff44, 0xaa44ff, 0x44ffff, 0xffee44];
 const FLOOR_OPACITY = 0.5;
@@ -7,6 +7,10 @@ const SUBLEVEL_OPACITY = 0.25;
 const Y_LIFT = 0.05; // slight elevation to be visible
 const WALL_HEIGHT = 2.2; // visual height of wall quads in the debug overlay
 const WALL_OPACITY = 0.55;
+const CONNECTOR_COLOR = 0xffaa00;
+const CONNECTOR_BRIDGED_COLOR = 0xe6d23c;
+const CONNECTOR_UNRESOLVED_COLOR = 0x888888;
+const CONNECTOR_OPACITY = 0.6;
 
 /**
  * @typedef DebugFloorOverlay
@@ -64,6 +68,21 @@ export function createDebugFloorOverlay(
         group.add(sprite);
         disposables.push(canvasTexture, spriteMat);
     });
+
+    // Stair / ramp connectors between floors, grey when unresolved (no confirmed destination),
+    // amber when resolved by projecting the trend rather than directly climbed
+    map.connectors?.forEach((conn, idx) => {
+        const color = !conn.resolved ? CONNECTOR_UNRESOLVED_COLOR : conn.bridged ? CONNECTOR_BRIDGED_COLOR : CONNECTOR_COLOR;
+        const connMesh = buildConnectorMesh(map, conn.cells, color, CONNECTOR_OPACITY);
+        connMesh.name = `connector-${idx}`;
+        group.add(connMesh);
+        disposables.push(connMesh.geometry, connMesh.material as THREE.Material);
+
+        const { sprite, canvasTexture, spriteMat } = buildConnectorLabel(map, conn);
+        group.add(sprite);
+        disposables.push(canvasTexture, spriteMat);
+    });
+
     scene.add(group);
 
     return {
@@ -226,6 +245,126 @@ export function buildWalkableMesh(
         depthWrite: false,
     });
     return new THREE.Mesh(geo, mat);
+}
+
+/**
+ * Continuous heightfield: corners shared between cells average their Y (not disjoint flat
+ * tiles), reads as a ramp between steps, distinct from the flat per-floor walkable mesh.
+ * @param map SceneMap
+ * @param cells grid cells covered by the connector, each with its own climbed Y
+ * @param color
+ * @param opacity
+ */
+export function buildConnectorMesh(
+    map: SceneMap,
+    cells: { r: number; c: number; y: number }[],
+    color: number,
+    opacity: number,
+): THREE.Mesh {
+    const gs = map.gridSize;
+    const { sceneMinX, sceneMinZ } = map.sceneBounds;
+
+    const cellY = new Map<string, number>();
+    for (const { r, c, y } of cells) cellY.set(`${r}_${c}`, y);
+
+    // Corner (r,c) = world (sceneMinX+c*gs, sceneMinZ+r*gs), shared by cells (r,c)/(r-1,c)/(r,c-1)/(r-1,c-1).
+    // Average whichever belong to the connector so adjoining cells blend at their shared edge.
+    const CORNER_NEIGHBOURS: [number, number][] = [[0, 0], [-1, 0], [0, -1], [-1, -1]];
+    const cornerY = new Map<string, number>();
+    function getCornerY(r: number, c: number): number {
+        const key = `${r}_${c}`;
+        const cached = cornerY.get(key);
+        if (cached !== undefined) return cached;
+
+        let sum = 0, count = 0;
+        for (const [dr, dc] of CORNER_NEIGHBOURS) {
+            const y = cellY.get(`${r + dr}_${c + dc}`);
+            if (y !== undefined) { sum += y; count++; }
+        }
+        const avg = count > 0 ? sum / count : 0;
+        cornerY.set(key, avg);
+        return avg;
+    }
+
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const vertexIndex = new Map<string, number>();
+    function getVertex(r: number, c: number): number {
+        const key = `${r}_${c}`;
+        const existing = vertexIndex.get(key);
+        if (existing !== undefined) return existing;
+
+        const idx = positions.length / 3;
+        positions.push(sceneMinX + c * gs, getCornerY(r, c) + Y_LIFT, sceneMinZ + r * gs);
+        vertexIndex.set(key, idx);
+        return idx;
+    }
+
+    for (const { r, c } of cells) {
+        const v00 = getVertex(r, c);
+        const v01 = getVertex(r, c + 1);
+        const v11 = getVertex(r + 1, c + 1);
+        const v10 = getVertex(r + 1, c);
+        indices.push(v00, v01, v11, v00, v11, v10);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    if (positions.length > 0) {
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geo.setIndex(indices);
+        geo.computeVertexNormals();
+    }
+
+    const mat = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+    });
+    return new THREE.Mesh(geo, mat);
+}
+
+/**
+ * Create a floating label at a stair connector's centroid, showing which floors it links
+ */
+function buildConnectorLabel(
+    map: SceneMap,
+    conn: StairConnector,
+): { sprite: THREE.Sprite; canvasTexture: THREE.CanvasTexture; spriteMat: THREE.SpriteMaterial } {
+    const gs = map.gridSize;
+    const { sceneMinX, sceneMinZ } = map.sceneBounds;
+    const avgC = conn.cells.reduce((s, cell) => s + cell.c, 0) / conn.cells.length;
+    const avgR = conn.cells.reduce((s, cell) => s + cell.r, 0) / conn.cells.length;
+    const worldX = sceneMinX + (avgC + 0.5) * gs;
+    const worldZ = sceneMinZ + (avgR + 0.5) * gs;
+    const worldY = (conn.entryY + conn.exitY) / 2 + 0.6;
+
+    const W = 200, H = 44;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = 'rgba(0,0,0,.75)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = !conn.resolved ? '#888888' : conn.bridged ? '#e6d23c' : '#ffaa00';
+    ctx.strokeRect(0, 0, W, H);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px monospace';
+    const dest = !conn.resolved ? '? (non résolu)' : conn.bridged ? `${conn.toFloorId} (projeté)` : String(conn.toFloorId);
+    ctx.fillText(`Escalier ${conn.fromFloorId} → ${dest}`, 10, 26);
+
+    const canvasTexture = new THREE.CanvasTexture(canvas);
+    const spriteMat = new THREE.SpriteMaterial({ map: canvasTexture, depthTest: false });
+    const sprite = new THREE.Sprite(spriteMat);
+
+    sprite.position.set(worldX, worldY, worldZ);
+    sprite.scale.set(1.0, 1.0 * H / W, 1);
+
+    return { sprite, canvasTexture, spriteMat };
 }
 
 /**

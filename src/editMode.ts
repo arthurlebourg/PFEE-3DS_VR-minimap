@@ -28,6 +28,12 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'wallScanHeight', label: 'Wall scan height', min: 0.1, max: 3.0, step: 0.05 },
     { key: 'wallNormalThreshold', label: 'Wall normal thr.', min: 0.05, max: 0.9, step: 0.05 },
     { key: 'wallRayLength', label: 'Wall ray length', min: 0.05, max: 1.0, step: 0.05 },
+    // Stair connector params
+    { key: 'minStairArea', label: 'Min stair area', min: 0.05, max: 5, step: 0.05 },
+    { key: 'maxStairArea', label: 'Max stair area', min: 1, max: 30, step: 0.5 },
+    { key: 'stairMaxStepRise', label: 'Stair max step rise', min: 0.02, max: 0.5, step: 0.01 },
+    { key: 'stairFlatTolerance', label: 'Stair flat tolerance', min: 0, max: 0.2, step: 0.01 },
+    { key: 'maxLandingRun', label: 'Max landing run', min: 0.2, max: 5, step: 0.1 },
 ];
 
 export type EditPanel = 'config' | 'floors';
