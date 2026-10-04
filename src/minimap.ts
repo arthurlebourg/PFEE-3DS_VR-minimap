@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { FloorManagerState } from './floorManager.js';
 import { roomColorCss, NO_ROOM, type Room } from './roomSegmentation.js';
 
-const CACHE_VERSION = 9;
+const CACHE_VERSION = 11;
 
 // Types
 
@@ -52,6 +52,27 @@ export interface FloorLevel {
 }
 
 /**
+ * @typedef StairConnector a staircase/ramp climbing from `fromFloorId`
+ * @prop fromFloorId floor the climb started from (always the lower one)
+ * @prop toFloorId floor the climb landed on, or null if unresolved
+ * @prop resolved true if the climb reached exactly one other floor
+ *                false = dead-ended
+ * @prop bridged true if `toFloorId` came from projecting the trend
+ * @prop cells grid cells covered by the connector (for slope-following render)
+ * @prop entryY lowest hit Y
+ * @prop exitY highest hit Y
+ */
+export interface StairConnector {
+    fromFloorId: number;
+    toFloorId: number | null;
+    resolved: boolean;
+    bridged: boolean;
+    cells: { r: number; c: number; y: number }[];
+    entryY: number;
+    exitY: number;
+}
+
+/**
  * @typedef SceneMap
  * @prop version Map version
  * @prop bounds XZ min-max bound
@@ -68,6 +89,7 @@ export interface SceneMap {
     rows: number;
     gridSize: number;
     levels: FloorLevel[];
+    connectors: StairConnector[];
 }
 
 /**
@@ -82,6 +104,11 @@ export interface SceneMap {
  * @prop wallScanHeight Height above floorY at which horizontal rays are cast for wall detection
  * @prop wallNormalThreshold Max |normal.y| to classify a surface as a wall (lower = more vertical)
  * @prop wallRayLength Maximum length of horizontal rays for wall detection
+ * @prop minStairArea Minimal area (m²) for a climbed group of cells to be considered a stair connector
+ * @prop maxStairArea Maximal area (m²) above which a group is treated as a mezzanine, not a staircase
+ * @prop stairMaxStepRise Max Y rise (m) accepted between two adjacent cells while climbing from a floor's edge
+ * @prop stairFlatTolerance Max |ΔY| (m) between adjacent cells still considered "flat" (landings, raycast noise)
+ * @prop maxLandingRun Max consecutive flat cells (m, converted to a cell count) allowed before a plateau is treated as a dead end
  * @prop doorWidth Openings narrower than this separate two rooms (room segmentation)
  * @prop minRoomArea Rooms smaller than this are merged into a neighbour room
  */
@@ -96,6 +123,11 @@ export interface MinimapConfig {
     wallScanHeight: number;
     wallNormalThreshold: number;
     wallRayLength: number;
+    minStairArea: number;
+    maxStairArea: number;
+    stairMaxStepRise: number;
+    stairFlatTolerance: number;
+    maxLandingRun: number;
     doorWidth: number;
     minRoomArea: number;
 }
@@ -216,6 +248,44 @@ export function renderMinimap(
                 if (mask & 8) { ctx.moveTo(x0, z0); ctx.lineTo(x0, z1); }
                 ctx.stroke();
             }
+        }
+    }
+
+    // Stair connectors touching this floor
+    if (map.connectors && !floorState?.triggerHeld) {
+        for (const conn of map.connectors) {
+            if (conn.fromFloorId !== floor.id && conn.toFloorId !== floor.id) continue;
+            const goingUp = conn.fromFloorId === floor.id; // this floor is the lower end of the connector
+
+            const fillColor = !conn.resolved
+                ? '150, 150, 150' // unresolved
+                : conn.bridged
+                    ? '230, 210, 60' // resolved by projection
+                    : goingUp ? '255, 180, 60' : '255, 120, 60';
+            ctx.fillStyle = `rgba(${fillColor}, ${conn.resolved ? 0.6 : 0.4})`;
+            for (const { r, c } of conn.cells)
+                ctx.fillRect(offsetX + c * scale, offsetZ + r * scale, scale, scale);
+
+            // Diagonal hatching so the connector reads as distinct from a flat floor tile
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+            ctx.lineWidth = 1;
+            for (const { r, c } of conn.cells) {
+                const x0 = offsetX + c * scale;
+                const z0 = offsetZ + r * scale;
+                ctx.beginPath();
+                ctx.moveTo(x0, z0 + scale);
+                ctx.lineTo(x0 + scale, z0);
+                ctx.stroke();
+            }
+
+            // connector's centroid : ▲/▼
+            const avgC = conn.cells.reduce((s, cell) => s + cell.c, 0) / conn.cells.length;
+            const avgR = conn.cells.reduce((s, cell) => s + cell.r, 0) / conn.cells.length;
+            ctx.fillStyle = '#fff';
+            ctx.font = `${Math.max(10, scale * 1.5)}px monospace`;
+            ctx.textAlign = 'center';
+            const glyph = !conn.resolved ? '?' : goingUp ? '▲' : '▼';
+            ctx.fillText(glyph, offsetX + (avgC + 0.5) * scale, offsetZ + (avgR + 0.5) * scale + 4);
         }
     }
 

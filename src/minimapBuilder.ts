@@ -1,13 +1,16 @@
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-import type { SceneMap, FloorLevel, MinimapConfig } from './minimap.js';
+import type { SceneMap, FloorLevel, MinimapConfig, StairConnector } from './minimap.js';
 import { buildWalkableGrid, pickSpawn } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
 
-const CACHE_VERSION = 9;
+const CACHE_VERSION = 11;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
+
+// Below this rise, a climb is noise, not a stair
+const MIN_CONNECTOR_RISE = 0.15;
 
 // Extensions BVH, once when loading
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -174,6 +177,259 @@ function buildWallGrid(
     }
 
     return walls;
+}
+
+const BRIDGE_NEIGHBOURHOOD: [number, number][] = [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]];
+const BRIDGE_STEP_Y = 0.05; // m, how finely the projected trend is sampled
+const BRIDGE_OVERSHOOT = 0.3; // meters past the target floor's own Y, in case its landing sits a bit off
+
+/**
+ * On dead-end, project the seed->highest-reached
+ * trend in a straight line and check if it crosses the next floor's walkable area
+ */
+function tryBridgeToNextFloor(
+    seed: { r: number; c: number },
+    seedY: number,
+    cells: { r: number; c: number; y: number }[],
+    sourceLevel: FloorLevel,
+    levels: FloorLevel[],
+): number | null {
+    const frontier = cells.reduce((best, cell) => (cell.y > best.y ? cell : best), cells[0]);
+    const dy = frontier.y - seedY;
+    if (dy <= 0) return null; // no upward trend to project
+
+    const slopeR = (frontier.r - seed.r) / dy;
+    const slopeC = (frontier.c - seed.c) / dy;
+
+    const target = levels
+        .filter(l => l.id !== sourceLevel.id && l.floorY > frontier.y)
+        .sort((a, b) => a.floorY - b.floorY)[0];
+    if (!target) return null;
+
+    for (let y = frontier.y + BRIDGE_STEP_Y; y <= target.floorY + BRIDGE_OVERSHOOT; y += BRIDGE_STEP_Y) {
+        const r = Math.round(frontier.r + slopeR * (y - frontier.y));
+        const c = Math.round(frontier.c + slopeC * (y - frontier.y));
+        for (const [or_, oc] of BRIDGE_NEIGHBOURHOOD) {
+            if (target.walkable[r + or_]?.[c + oc]) return target.id;
+        }
+    }
+    return null;
+}
+
+/**
+ * Grows from a boundary cell of `sourceLevel`.
+ * A neighbour is accepted only if its height sits within [-stairFlatTolerance, +stairMaxStepRise] of the current cell.
+ * No global slope, just a bounded step each time, so landings pass but a jump to furniture height doesn't.
+ */
+function climbFromSeed(
+    seed: { r: number; c: number },
+    sourceLevel: FloorLevel,
+    heightNear: (r: number, c: number, fromY: number) => number | undefined,
+    levels: FloorLevel[],
+    claimedByThisFloor: Set<string>,
+    gridSize: number,
+    config: MinimapConfig,
+): StairConnector | null {
+    const { stairMaxStepRise, stairFlatTolerance, maxLandingRun, minStairArea, maxStairArea } = config;
+    const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    const maxLandingCells = Math.ceil(maxLandingRun / gridSize);
+
+    // Use the seed's actual measured height, not sourceLevel.floorY
+    const seedY = heightNear(seed.r, seed.c, sourceLevel.floorY) ?? sourceLevel.floorY;
+
+    type Node = { r: number; c: number; y: number; flatRun: number };
+    const climbQueue: Node[] = [{ r: seed.r, c: seed.c, y: seedY, flatRun: 0 }];
+    const flatQueue: Node[] = [];
+    const localVisited = new Set<string>();
+    const cells: { r: number; c: number; y: number }[] = [];
+    const touchedFloorIds = new Set<number>();
+
+    let node: Node | undefined;
+    while ((node = climbQueue.shift() ?? flatQueue.shift())) {
+        const key = `${node.r}_${node.c}`;
+        if (localVisited.has(key)) continue;
+        localVisited.add(key);
+
+        for (const [dr, dc] of DIRS) {
+            const nr = node.r + dr, nc = node.c + dc;
+            const nKey = `${nr}_${nc}`;
+            if (localVisited.has(nKey) || claimedByThisFloor.has(nKey)) continue;
+
+            const hitFloor = levels.find(l => l.id !== sourceLevel.id && l.walkable[nr]?.[nc]);
+            const neighbourY = hitFloor ? hitFloor.floorY : heightNear(nr, nc, node.y);
+            if (neighbourY === undefined) continue; // no surface there at all
+
+            const dy = neighbourY - node.y;
+            if (dy < -stairFlatTolerance || dy > stairMaxStepRise) continue; // too steep either way
+
+            const isFlat = dy <= stairFlatTolerance;
+            const flatRun = isFlat ? node.flatRun + 1 : 0;
+            if (flatRun > maxLandingCells) continue; // wandered too far on a plateau — dead end
+
+            if (hitFloor) {
+                touchedFloorIds.add(hitFloor.id);
+                localVisited.add(nKey); // arrival cell — don't grow past it
+                continue;
+            }
+
+            cells.push({ r: nr, c: nc, y: neighbourY });
+            (isFlat ? flatQueue : climbQueue).push({ r: nr, c: nc, y: neighbourY, flatRun });
+        }
+    }
+
+    for (const { r, c } of cells) claimedByThisFloor.add(`${r}_${c}`);
+
+    if (cells.length === 0) return null; // nothing climbed at all — not worth reporting
+
+    const area = cells.length * gridSize * gridSize;
+    if (area < minStairArea || area > maxStairArea) return null;
+
+    // Require real climbed height
+    const ys = cells.map(c => c.y);
+    if (Math.max(...ys) - Math.min(...ys) < MIN_CONNECTOR_RISE) return null;
+
+    // Resolved = landed on exactly one floor.
+    // A pure dead end gets one more chance via tryBridgeToNextFloor.
+    // An already-ambiguous climb is left alone.
+    // Still-unresolved is reported, not dropped.
+    let resolved = touchedFloorIds.size === 1;
+    let bridged = false;
+    let toFloorId = resolved ? [...touchedFloorIds][0] : null;
+
+    if (!resolved && touchedFloorIds.size === 0) {
+        const bridgedFloorId = tryBridgeToNextFloor(seed, seedY, cells, sourceLevel, levels);
+        if (bridgedFloorId !== null) {
+            resolved = true;
+            bridged = true;
+            toFloorId = bridgedFloorId;
+        }
+    }
+
+    return {
+        fromFloorId: sourceLevel.id,
+        toFloorId,
+        resolved,
+        bridged,
+        cells,
+        entryY: Math.min(...ys),
+        exitY: Math.max(...ys),
+    };
+}
+
+/**
+ * Detect stair connectors by climbing outward from each floor's edge
+ *
+ * @param allHits every raw hit from the downward raycast pass
+ * @param levels finalized floor levels (post sub-level merge)
+ * @param gridSize size of a cell
+ * @param config stairMaxStepRise / stairFlatTolerance / maxLandingRun / minStairArea / maxStairArea
+ * @param scene scene rays against
+ * @param raycaster reused raycaster instance
+ * @param sceneMin scene bounding-box min, to convert back to world
+ * @param rayOriginY Y to fire catch-up rays down from
+ */
+function detectStairConnectors(
+    allHits: { r: number; c: number; y: number }[],
+    levels: FloorLevel[],
+    gridSize: number,
+    config: MinimapConfig,
+    scene: THREE.Scene,
+    raycaster: THREE.Raycaster,
+    sceneMin: THREE.Vector3,
+    rayOriginY: number,
+): StairConnector[] {
+    const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+
+    // Height field: raw hits per cell, kept separate so the climb can pick whichever
+    // surface is closest to its current Y
+    const cellYs = new Map<string, number[]>();
+    for (const { r, c, y } of allHits) {
+        const key = `${r}_${c}`;
+        const arr = cellYs.get(key);
+        if (arr) arr.push(y); else cellYs.set(key, [y]);
+    }
+
+    // Try with a dense sub-grid reaching past the cell's edge, fired whenever no "ahead"
+    // candidate is found, not just on zero data, or a cell with one hit never gets reprobed.
+    const fallbackOrigin = new THREE.Vector3();
+    const fallbackDown = new THREE.Vector3(0, -1, 0);
+    const FALLBACK_GRID = 5;
+    const FALLBACK_REACH = 0.4; // cell widths
+    const fallbackOffsets: [number, number][] = [];
+    for (let i = 0; i < FALLBACK_GRID; i++) {
+        for (let j = 0; j < FALLBACK_GRID; j++) {
+            fallbackOffsets.push([
+                -FALLBACK_REACH + (2 * FALLBACK_REACH * i) / (FALLBACK_GRID - 1),
+                -FALLBACK_REACH + (2 * FALLBACK_REACH * j) / (FALLBACK_GRID - 1),
+            ]);
+        }
+    }
+
+    const fallbackTried = new Set<string>();
+    const pickAhead = (candidates: number[], fromY: number): number | undefined => {
+        const ahead = candidates.filter(y => y >= fromY - config.stairFlatTolerance);
+        return ahead.length > 0 ? Math.min(...ahead) : undefined;
+    };
+
+    function heightNear(r: number, c: number, fromY: number): number | undefined {
+        const key = `${r}_${c}`;
+        let arr = cellYs.get(key);
+
+        if (arr) {
+            const ahead = pickAhead(arr, fromY);
+            if (ahead !== undefined) return ahead;
+        }
+
+        // No usable "ahead" candidate yet, try the dense catch-up probe,
+        // once per cell, before falling back to whatever's closest.
+        if (!fallbackTried.has(key)) {
+            fallbackTried.add(key);
+            const cx = sceneMin.x + (c + 0.5) * gridSize;
+            const cz = sceneMin.z + (r + 0.5) * gridSize;
+            const found: number[] = [];
+            for (const [ox, oz] of fallbackOffsets) {
+                found.push(...castDown(
+                    scene, raycaster, fallbackOrigin, fallbackDown, config.normalThreshold,
+                    cx + ox * gridSize, cz + oz * gridSize, rayOriginY
+                ));
+            }
+            if (found.length > 0) {
+                arr = arr ? [...arr, ...found] : found;
+                cellYs.set(key, arr);
+                const ahead = pickAhead(arr, fromY);
+                if (ahead !== undefined) return ahead;
+            }
+        }
+
+        if (!arr || arr.length === 0) return undefined;
+        // "Closest in Y" has no sense of climb direction and can grab the step behind us
+        // prefer an ahead candidate, only falling back to nearest when none exists
+        return arr.reduce((best, y) => Math.abs(y - fromY) < Math.abs(best - fromY) ? y : best);
+    }
+
+    const connectors: StairConnector[] = [];
+
+    for (const level of levels) {
+        const rows = level.walkable.length;
+        const cols = level.walkable[0]?.length ?? 0;
+
+        // Scoped per source floor: a spiral can revisit the same (r,c) at a higher Y on its way up
+        const claimedByThisFloor = new Set<string>();
+
+        // candidate stair entrances
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (!level.walkable[r][c]) continue;
+                const isBoundary = DIRS.some(([dr, dc]) => !level.walkable[r + dr]?.[c + dc]);
+                if (!isBoundary) continue;
+
+                const connector = climbFromSeed({ r, c }, level, heightNear, levels, claimedByThisFloor, gridSize, config);
+                if (connector) connectors.push(connector);
+            }
+        }
+    }
+
+    return connectors;
 }
 
 /**
@@ -580,6 +836,21 @@ export async function buildSceneMap(
     console.timeEnd('rooms');
     console.groupEnd();
 
+    // Step 6 - Stair / ramp connectors between floors
+    console.group('Step 6 - Stair connectors');
+    console.time('stairs');
+    console.log('Detecting stair connectors…');
+
+    const connectors = detectStairConnectors(allHits, levels, gridSize, config, scene, raycaster, min, rayOriginY);
+
+    console.log(`${connectors.length} connector(s) detected :`);
+    connectors.forEach((c, i) => console.log(
+        `    Connector ${i} : floor ${c.fromFloorId} <-> floor ${c.toFloorId}, ${c.cells.length} cells, Y[${c.entryY.toFixed(2)}, ${c.exitY.toFixed(2)}]`
+    ));
+
+    console.timeEnd('stairs');
+    console.groupEnd();
+
     // Global bounds
     const globalMinX = Math.min(...levels.map(l => l.bounds.minX));
     const globalMaxX = Math.max(...levels.map(l => l.bounds.maxX));
@@ -599,6 +870,7 @@ export async function buildSceneMap(
         rows: Math.ceil((globalMaxZ - globalMinZ) / gridSize),
         gridSize,
         levels,
+        connectors,
     };
 
     return { map, histogram: bins };
