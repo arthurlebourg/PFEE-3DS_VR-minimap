@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type {FloorManagerState} from './floorManager.js';
+import type { FloorManagerState } from './floorManager.js';
 import { roomColorCss, NO_ROOM, type Room } from './roomSegmentation.js';
 
 const CACHE_VERSION = 9;
@@ -169,7 +169,7 @@ export function renderMinimap(
     // dim floor
     const rows = floor.walkable.length;
     const cols = floor.walkable[0]?.length ?? 0;
-    const scale  = Math.min(canvasSize / cols, canvasSize / rows);
+    const scale = Math.min(canvasSize / cols, canvasSize / rows);
     const offsetX = (canvasSize - cols * scale) / 2;
     const offsetZ = (canvasSize - rows * scale) / 2;
 
@@ -223,7 +223,7 @@ export function renderMinimap(
     for (const sub of floor.subLevels) {
         const subRows = sub.walkable.length;
         const subCols = sub.walkable[0]?.length ?? 0;
-        const sScale   = Math.min(canvasSize / subCols, canvasSize / subRows);
+        const sScale = Math.min(canvasSize / subCols, canvasSize / subRows);
         const sOffsetX = (canvasSize - subCols * sScale) / 2;
         const sOffsetZ = (canvasSize - subRows * sScale) / 2;
 
