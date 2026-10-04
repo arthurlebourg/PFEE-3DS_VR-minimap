@@ -69,6 +69,9 @@ const defaultConfig = {
     wallScanHeight: 1.0, // metres above floorY where horizontal rays are fired
     wallNormalThreshold: 0.3, // |normal.y| < this => wall (0 = perfectly vertical only)
     wallRayLength: 0.25, // max ray length (≈ gridSize * 1.25)
+    // Room segmentation
+    doorWidth: 1.0, // openings narrower than this (m) split two rooms
+    minRoomArea: 1.5, // rooms smaller than this (m²) are merged into a neighbour
 };
 
 console.log("Minimap existence check")

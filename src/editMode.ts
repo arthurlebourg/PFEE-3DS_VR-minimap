@@ -28,6 +28,9 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'wallScanHeight', label: 'Wall scan height', min: 0.1, max: 3.0, step: 0.05 },
     { key: 'wallNormalThreshold', label: 'Wall normal thr.', min: 0.05, max: 0.9, step: 0.05 },
     { key: 'wallRayLength', label: 'Wall ray length', min: 0.05, max: 1.0, step: 0.05 },
+    // Room segmentation params
+    { key: 'doorWidth', label: 'Door width', min: 0.4, max: 3.0, step: 0.05 },
+    { key: 'minRoomArea', label: 'Min room area', min: 0.25, max: 20, step: 0.25 },
 ];
 
 export type EditPanel = 'config' | 'floors';
