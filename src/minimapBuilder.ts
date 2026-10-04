@@ -176,6 +176,55 @@ function buildWallGrid(
 }
 
 /**
+ * Clean wall masks by removing tiny disconnected wall fragments.
+ * This keeps long walls and curved wall segments while removing furniture/table artifacts.
+ */
+function filterWallClusters(walls: number[][], minClusterCells: number = 3): number[][] {
+    const rows = walls.length;
+    const cols = walls[0]?.length ?? 0;
+    if (rows === 0 || cols === 0) return walls;
+
+    const visited = Array.from({ length: rows }, () => new Array(cols).fill(false));
+    const filtered = walls.map(row => [...row]);
+
+    const DIRS: [number, number][] = [
+        [-1, -1], [-1, 0], [-1, 1],
+        [0, -1], [0, 1],
+        [1, -1], [1, 0], [1, 1],
+    ];
+
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            if (visited[r][c] || filtered[r][c] === 0) continue;
+
+            const queue: [number, number][] = [[r, c]];
+            visited[r][c] = true;
+            const cluster: [number, number][] = [];
+
+            while (queue.length > 0) {
+                const [cr, cc] = queue.pop()!;
+                cluster.push([cr, cc]);
+
+                for (const [dr, dc] of DIRS) {
+                    const nr = cr + dr;
+                    const nc = cc + dc;
+                    if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+                    if (visited[nr][nc] || filtered[nr][nc] === 0) continue;
+                    visited[nr][nc] = true;
+                    queue.push([nr, nc]);
+                }
+            }
+
+            if (cluster.length < minClusterCells) {
+                for (const [cr, cc] of cluster) filtered[cr][cc] = 0;
+            }
+        }
+    }
+
+    return filtered;
+}
+
+/**
  * Create a histogram of Y hits
  * @param hits
  * @param sliceSize small cluster Y
@@ -503,6 +552,7 @@ export async function buildSceneMap(
     for (const level of levels) {
         console.time(`    floor ${level.id}`);
         level.walls = buildWallGrid(scene, level.walkable, level.floorY, min, config);
+        level.walls = filterWallClusters(level.walls, 3);
         const wallCount = level.walls.flat().filter(v => v !== 0).length;
         console.log(`    Floor ${level.id}: ${wallCount} cells with wall(s)`);
         console.timeEnd(`    floor ${level.id}`);
