@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import type {FloorManagerState} from './floorManager.js';
+import type { FloorManagerState } from './floorManager.js';
+import { roomColorCss, NO_ROOM, type Room } from './roomSegmentation.js';
 
-const CACHE_VERSION = 10;
+const CACHE_VERSION = 11;
 
 // Types
 
@@ -42,6 +43,9 @@ export interface FloorLevel {
     walkable: boolean[][];
     /** Wall bitmask per cell (WALL_N | WALL_E | WALL_S | WALL_W). Populated after buildSceneMap. */
     walls: number[][];
+    /** Room id per cell (NO_ROOM = -1 if none). Populated after buildSceneMap. */
+    roomIds: number[][];
+    rooms: Room[];
     subLevels: SubLevel[];
     spawnPoint: { x: number; y: number; z: number };
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
@@ -105,6 +109,8 @@ export interface SceneMap {
  * @prop stairMaxStepRise Max Y rise (m) accepted between two adjacent cells while climbing from a floor's edge
  * @prop stairFlatTolerance Max |ΔY| (m) between adjacent cells still considered "flat" (landings, raycast noise)
  * @prop maxLandingRun Max consecutive flat cells (m, converted to a cell count) allowed before a plateau is treated as a dead end
+ * @prop doorWidth Openings narrower than this separate two rooms (room segmentation)
+ * @prop minRoomArea Rooms smaller than this are merged into a neighbour room
  */
 export interface MinimapConfig {
     gridSize: number;
@@ -122,6 +128,8 @@ export interface MinimapConfig {
     stairMaxStepRise: number;
     stairFlatTolerance: number;
     maxLandingRun: number;
+    doorWidth: number;
+    minRoomArea: number;
 }
 
 // Save floor mapping
@@ -193,7 +201,7 @@ export function renderMinimap(
     // dim floor
     const rows = floor.walkable.length;
     const cols = floor.walkable[0]?.length ?? 0;
-    const scale  = Math.min(canvasSize / cols, canvasSize / rows);
+    const scale = Math.min(canvasSize / cols, canvasSize / rows);
     const offsetX = (canvasSize - cols * scale) / 2;
     const offsetZ = (canvasSize - rows * scale) / 2;
 
@@ -203,11 +211,17 @@ export function renderMinimap(
     // transparency
     const mapAlpha = floorState?.triggerHeld ? '0.35' : '0.85';
 
-    ctx.fillStyle = `rgba(80, 180, 120, ${mapAlpha})`;
+    // One color per room (grey for cells outside any room, green if segmentation is missing)
+    const hasRooms = (floor.rooms?.length ?? 0) > 0;
+    const defaultFill = hasRooms ? `rgba(119, 119, 119, ${mapAlpha})` : `rgba(80, 180, 120, ${mapAlpha})`;
+    const roomFills = (floor.rooms ?? []).map(room => roomColorCss(room.id, parseFloat(mapAlpha)));
     for (let r = 0; r < rows; r++)
         for (let c = 0; c < cols; c++)
-            if (floor.walkable[r][c])
+            if (floor.walkable[r][c]) {
+                const roomId = floor.roomIds?.[r]?.[c] ?? NO_ROOM;
+                ctx.fillStyle = roomFills[roomId] ?? defaultFill;
                 ctx.fillRect(offsetX + c * scale, offsetZ + r * scale, scale, scale);
+            }
 
     // Wall segments
     if (floor.walls && !floorState?.triggerHeld) {
@@ -279,7 +293,7 @@ export function renderMinimap(
     for (const sub of floor.subLevels) {
         const subRows = sub.walkable.length;
         const subCols = sub.walkable[0]?.length ?? 0;
-        const sScale   = Math.min(canvasSize / subCols, canvasSize / subRows);
+        const sScale = Math.min(canvasSize / subCols, canvasSize / subRows);
         const sOffsetX = (canvasSize - subCols * sScale) / 2;
         const sOffsetZ = (canvasSize - subRows * sScale) / 2;
 

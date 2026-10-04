@@ -75,6 +75,9 @@ const defaultConfig = {
     stairMaxStepRise: 0.4, // m, max Y rise accepted per grid cell while climbing
     stairFlatTolerance: 0.03, // m, |deltaY| under this still counts as a flat step
     maxLandingRun: 1.2, // m, max consecutive flat run before considering that's a dead end
+    // Room segmentation
+    doorWidth: 1.0, // openings narrower than this (m) split two rooms
+    minRoomArea: 1.5, // rooms smaller than this (m²) are merged into a neighbour
 };
 
 console.log("Minimap existence check")

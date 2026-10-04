@@ -34,6 +34,9 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'stairMaxStepRise', label: 'Stair max step rise', min: 0.02, max: 0.5, step: 0.01 },
     { key: 'stairFlatTolerance', label: 'Stair flat tolerance', min: 0, max: 0.2, step: 0.01 },
     { key: 'maxLandingRun', label: 'Max landing run', min: 0.2, max: 5, step: 0.1 },
+    // Room segmentation params
+    { key: 'doorWidth', label: 'Door width', min: 0.4, max: 3.0, step: 0.05 },
+    { key: 'minRoomArea', label: 'Min room area', min: 0.25, max: 20, step: 0.25 },
 ];
 
 export type EditPanel = 'config' | 'floors';
