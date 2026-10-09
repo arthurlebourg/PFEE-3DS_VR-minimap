@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { loadGLB } from './glbLoader.js';
-import { createPlayer, updateMovement } from './player.js';
+import { createPlayer, updateMovement, placePlayerOnFloor } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
     renderMinimap, createVRMinimap,
@@ -16,6 +16,7 @@ import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type 
 import { commitFloorMove, type MapContext } from './floorAdjust.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
 import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type HistogramHud } from './histogramPanel.js';
+import { createLoadingBar } from './loadingBar.js';
 
 // Patch XRWebGLBinding bug
 if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
@@ -27,7 +28,6 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.xr.enabled = true;
 renderer.xr.cameraAutoUpdate = false;
 document.body.appendChild(renderer.domElement);
-document.body.appendChild(VRButton.createButton(renderer));
 
 // Scene
 const scene = new THREE.Scene();
@@ -44,18 +44,14 @@ scene.add(dirLight);
 // Model
 const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
 // const MODEL_PATH = '/models/plant-3.glb';
+// https://sketchfab.com/3d-models/airbus-a380-2370a0adb0a140fe962972effcd08cbb
+//const MODEL_PATH = '/models/airbus_a380.glb';
 const MAP_PATH = "/maps/sceneMap.json";
 const model = await loadGLB(MODEL_PATH);
 scene.add(model);
 
 // SceneMap
-const loadingEl = document.createElement('div');
-loadingEl.textContent = 'Building minimap…';
-Object.assign(loadingEl.style, {
-    position: 'fixed', bottom: '80px', right: '16px',
-    color: '#fff', fontFamily: 'monospace', fontSize: '12px',
-});
-document.body.appendChild(loadingEl);
+const loadingBar = createLoadingBar();
 
 const defaultConfig = {
     gridSize: 0.2,
@@ -85,12 +81,13 @@ let sceneMap = await loadSceneMapFromFile(MAP_PATH);
 console.log(sceneMap);
 let histogram: HistogramBin[] = [];
 if (!sceneMap) {
-    const built = await buildSceneMap(scene, defaultConfig);
+    loadingBar.show();
+    const built = await buildSceneMap(model, defaultConfig, loadingBar.set);
+    loadingBar.hide();
     sceneMap = built.map;
     histogram = built.histogram;
 }
 
-loadingEl.remove();
 let debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
 
 // Edit mode - live minimap config tuning (desktop panel + in-VR panel)
@@ -115,9 +112,13 @@ async function rebuildMinimap(): Promise<void> {
     if (editMode.isRebuilding) return;
     editMode.isRebuilding = true;
 
+    loadingBar.show();
+    const built = await buildSceneMap(model, editMode.config, loadingBar.set);
+    loadingBar.hide();
+
+    // render loop keeps running during the build: swap the old map only once the new one is ready
     debugOverlay.dispose();
     disposeFloorMoveVisual();
-    const built = await buildSceneMap(scene, editMode.config);
     sceneMap = built.map;
     histogram = built.histogram;
     debugOverlay = createDebugFloorOverlay(scene, sceneMap);
@@ -206,11 +207,22 @@ for (let i = 0; i < 2; i++) {
 // XR movement
 initXrMove(renderer.xr);
 
+// Spawn is applied on the first frame with a tracked headset pose, the pose isn't known yet at sessionstart
+let spawnPending = false;
+
 renderer.xr.addEventListener('sessionstart', () => {
-    const spawn = sceneMap!.levels[0].spawnPoint;
-    const EYE_HEIGHT = 1.65;
-    player.position.set(spawn.x, spawn.y - EYE_HEIGHT, spawn.z);
+    spawnPending = true;
 });
+
+function trySpawn(): void {
+    const frame = renderer.xr.getFrame();
+    const refSpace = renderer.xr.getReferenceSpace();
+    if (!frame || !refSpace || !frame.getViewerPose(refSpace)) return;
+
+    const level = sceneMap!.levels[floorState.curFloorIdx];
+    placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
+    spawnPending = false;
+}
 
 // Minimap
 const leftGrip = renderer.xr.getControllerGrip(0);
@@ -277,6 +289,9 @@ function getVRJoystick(): { x: number; y: number } {
 // Floor state
 const floorState = createFloorManager(0);
 
+// VR button only once everything is set up: entering VR earlier would miss the sessionstart listeners (spawn, minimap...)
+document.body.appendChild(VRButton.createButton(renderer));
+
 // Main
 const playerDir = new THREE.Vector3();
 const timer = new THREE.Timer();
@@ -284,6 +299,7 @@ const timer = new THREE.Timer();
 renderer.setAnimationLoop(() => {
     timer.update();
     renderer.xr.updateCamera(camera);
+    if (spawnPending) trySpawn();
 
     if (!floorState.isCoolingDown) {
         updateMovement(player, camera, getVRJoystick());
@@ -292,7 +308,7 @@ renderer.setAnimationLoop(() => {
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
     if (!editMode.active) {
-        updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player);
+        updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player, camera);
     }
 
     if (vrMinimap) {

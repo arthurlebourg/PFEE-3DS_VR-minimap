@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 import type { SceneMap } from './minimap.js';
-import { teleportTo } from './xrMove.ts';
+import { placePlayerOnFloor } from './player.js';
 
 // trigger value in [0,1]
 const TRIGGER_THRESHOLD = 0.5;
@@ -36,7 +36,8 @@ export function updateFloorManager(
     state: FloorManagerState,
     map: SceneMap,
     session: XRSession | null,
-    player: THREE.Group
+    player: THREE.Group,
+    camera: THREE.Camera
 ): void {
     if (!session) return;
 
@@ -73,10 +74,8 @@ export function updateFloorManager(
 
         if (state.dir !== 0 && target >= 0 && target < map.levels.length) {
             state.curFloorIdx = target;
-            const spawn = map.levels[target].spawnPoint;
-
-            const EYE_HEIGHT = 1.65;
-            player.position.set(spawn.x, spawn.y - EYE_HEIGHT, spawn.z);
+            const level = map.levels[target];
+            placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
 
             // avoid spamming command
             state.isCoolingDown = true;

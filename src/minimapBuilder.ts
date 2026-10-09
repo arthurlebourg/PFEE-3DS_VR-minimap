@@ -12,6 +12,32 @@ const MACRO_CELL_MULTIPLIER = 5;
 // Below this rise, a climb is noise, not a stair
 const MIN_CONNECTOR_RISE = 0.15;
 
+// Max time spent computing before handing control back to the browser (repaint, input)
+const YIELD_INTERVAL_MS = 30;
+
+export type BuildProgressCallback = (progress: number, label: string) => void;
+
+/**
+ * Let the browser repaint (loading bar) before continuing the computation
+ */
+function yieldToBrowser(): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+/**
+ * To call often inside long loops: hands control back to the browser (repaint, input,
+ * render loop) at most every YIELD_INTERVAL_MS, reporting progress right before
+ */
+function createYielder(): (reportProgress: () => void) => Promise<void> {
+    let lastYield = performance.now();
+    return async reportProgress => {
+        if (performance.now() - lastYield < YIELD_INTERVAL_MS) return;
+        reportProgress();
+        await yieldToBrowser();
+        lastYield = performance.now();
+    };
+}
+
 // Extensions BVH, once when loading
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -20,7 +46,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 /**
  * Build BVH on meshes in scene (once)
  */
-function ensureBoundsTrees(scene: THREE.Scene): void {
+function ensureBoundsTrees(scene: THREE.Object3D): void {
     scene.traverse(obj => {
         if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
         const geo = obj.geometry as THREE.BufferGeometry & { boundsTree?: unknown };
@@ -42,7 +68,7 @@ const _worldNormal = new THREE.Vector3();
  * Sent a vertical ray and return Y hits (filtered normal)
  */
 function castDown(
-    scene: THREE.Scene,
+    scene: THREE.Object3D,
     raycaster: THREE.Raycaster,
     origin: THREE.Vector3,
     downDir: THREE.Vector3,
@@ -84,7 +110,7 @@ export interface HistogramBin {
  * A surface is a "wall" when its world normal is nearly horizontal (|normal.y| < wallNormalThreshold).
  */
 function castHorizontal(
-    scene: THREE.Scene,
+    scene: THREE.Object3D,
     raycaster: THREE.Raycaster,
     origin: THREE.Vector3,
     dir: THREE.Vector3,
@@ -127,15 +153,17 @@ function castHorizontal(
  * @param floorY Y position of the floor
  * @param sceneMin Scene bounding box minimum (THREE.Vector3)
  * @param config MinimapConfig (wallScanHeight, wallNormalThreshold, wallRayLength, gridSize)
+ * @param onProgress Called with progress in [0, 1]
  * @returns 2D grid of wall bitmasks (same dimensions as walkable)
  */
-function buildWallGrid(
-    scene: THREE.Scene,
+async function buildWallGrid(
+    scene: THREE.Object3D,
     walkable: boolean[][],
     floorY: number,
     sceneMin: THREE.Vector3,
     config: MinimapConfig,
-): number[][] {
+    onProgress: (progress: number) => void,
+): Promise<number[][]> {
     const { gridSize, wallScanHeight, wallNormalThreshold, wallRayLength } = config;
     const rows = walkable.length;
     const cols = walkable[0]?.length ?? 0;
@@ -157,8 +185,10 @@ function buildWallGrid(
         { dx: -1, dz: 0, bit: 8 }, // West  (−X)
     ];
     const dirVec = new THREE.Vector3();
+    const maybeYield = createYielder();
 
     for (let r = 0; r < rows; r++) {
+        await maybeYield(() => onProgress(r / rows));
         for (let c = 0; c < cols; c++) {
             if (!walkable[r][c]) continue;
 
@@ -327,17 +357,19 @@ function climbFromSeed(
  * @param raycaster reused raycaster instance
  * @param sceneMin scene bounding-box min, to convert back to world
  * @param rayOriginY Y to fire catch-up rays down from
+ * @param onProgress Called with progress in [0, 1]
  */
-function detectStairConnectors(
+async function detectStairConnectors(
     allHits: { r: number; c: number; y: number }[],
     levels: FloorLevel[],
     gridSize: number,
     config: MinimapConfig,
-    scene: THREE.Scene,
+    scene: THREE.Object3D,
     raycaster: THREE.Raycaster,
     sceneMin: THREE.Vector3,
     rayOriginY: number,
-): StairConnector[] {
+    onProgress: (progress: number) => void,
+): Promise<StairConnector[]> {
     const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
     // Height field: raw hits per cell, kept separate so the climb can pick whichever
@@ -408,8 +440,9 @@ function detectStairConnectors(
     }
 
     const connectors: StairConnector[] = [];
+    const maybeYield = createYielder();
 
-    for (const level of levels) {
+    for (const [li, level] of levels.entries()) {
         const rows = level.walkable.length;
         const cols = level.walkable[0]?.length ?? 0;
 
@@ -418,6 +451,7 @@ function detectStairConnectors(
 
         // candidate stair entrances
         for (let r = 0; r < rows; r++) {
+            await maybeYield(() => onProgress((li + r / rows) / levels.length));
             for (let c = 0; c < cols; c++) {
                 if (!level.walkable[r][c]) continue;
                 const isBoundary = DIRS.some(([dr, dc]) => !level.walkable[r + dr]?.[c + dc]);
@@ -551,8 +585,8 @@ function buildYHistogram(
  * (légèrement rentrés) avant d'abandonner la zone — évite qu'un joint/gap de mesh
  * pile au centre fasse sauter toute une zone qui a pourtant du sol.
  */
-function adaptiveRaycastQueue(
-    scene: THREE.Scene,
+async function adaptiveRaycastQueue(
+    scene: THREE.Object3D,
     raycaster: THREE.Raycaster,
     normalThreshold: number,
     min: THREE.Vector3,
@@ -560,14 +594,19 @@ function adaptiveRaycastQueue(
     rayOriginY: number,
     macroCells: { rowStart: number; rowEnd: number; colStart: number; colEnd: number }[],
     allHits: { r: number; c: number; y: number }[],
-    seen: Set<string>
-): number {
+    seen: Set<string>,
+    onProgress: (progress: number) => void
+): Promise<number> {
     const origin = new THREE.Vector3();
     const downDir = new THREE.Vector3(0, -1, 0);
+
+    // Each pass halves the cells, until a single grid cell
+    const expectedPasses = Math.ceil(Math.log2(MACRO_CELL_MULTIPLIER)) + 1;
 
     let queue = macroCells;
     let pass = 0;
     let totalRays = 0;
+    const maybeYield = createYielder();
 
     while (queue.length > 0) {
         const cellsThisPass = queue.length;
@@ -577,8 +616,10 @@ function adaptiveRaycastQueue(
         const nextQueue: typeof queue = [];
         let touched = 0;
 
-        for (const cell of queue) {
-            const { rowStart, rowEnd, colStart, colEnd } = cell;
+        for (let i = 0; i < queue.length; i++) {
+            await maybeYield(() => onProgress(Math.min((pass + i / queue.length) / expectedPasses, 1)));
+
+            const { rowStart, rowEnd, colStart, colEnd } = queue[i];
 
             const x0 = min.x + colStart * gridSize;
             const x1 = min.x + colEnd * gridSize;
@@ -638,12 +679,15 @@ function adaptiveRaycastQueue(
 
 /**
  * Build the scene map with floor detection
- * @param scene Scene of the 3D world
+ * @param scene Model to scan: pass the loaded model, not the whole scene, so helpers
+ * (debug overlay, controllers...) are not raycast nor included in the bounds
  * @param config Parameters use during map creation
+ * @param onProgress Called with progress in [0, 1] and the current step label
  */
 export async function buildSceneMap(
-    scene: THREE.Scene,
+    scene: THREE.Object3D,
     config: MinimapConfig,
+    onProgress: BuildProgressCallback = () => { },
 ): Promise<{ map: SceneMap; histogram: HistogramBin[] }> {
     const {
         gridSize,
@@ -666,6 +710,8 @@ export async function buildSceneMap(
     console.log(`Bounds : X[${min.x.toFixed(2)}, ${max.x.toFixed(2)}]  Y[${min.y.toFixed(2)}, ${max.y.toFixed(2)}]  Z[${min.z.toFixed(2)}, ${max.z.toFixed(2)}]`);
     console.log(`Global grid : ${cols}×${rows} = ${totalCells} cells`);
 
+    onProgress(0, 'Building BVH…');
+    await yieldToBrowser();
     console.time('BVH build');
     ensureBoundsTrees(scene);
     console.timeEnd('BVH build');
@@ -695,10 +741,13 @@ export async function buildSceneMap(
 
     console.log(`Macro grid : ${macroCells.length} starting cells`);
 
-    const totalRays = adaptiveRaycastQueue(
+    onProgress(0.05, 'Raycasting floors…');
+    await yieldToBrowser();
+    const totalRays = await adaptiveRaycastQueue(
         scene, raycaster, normalThreshold,
         min, gridSize, rayOriginY,
-        macroCells, allHits, seen
+        macroCells, allHits, seen,
+        p => onProgress(0.05 + p * 0.55, 'Raycasting floors…')
     );
 
     console.timeEnd('raycast total');
@@ -707,6 +756,8 @@ export async function buildSceneMap(
     console.groupEnd();
 
     // Histogram Y => pics = floors
+    onProgress(0.6, 'Detecting floors…');
+    await yieldToBrowser();
     console.group('Step 2 - Histogram Y');
     console.time('histogram');
 
@@ -742,6 +793,8 @@ export async function buildSceneMap(
 
     for (let pi = 0; pi < peaks.length; pi++) {
         const peak = peaks[pi];
+        onProgress(0.62 + (pi / peaks.length) * 0.13, 'Building walkable grids…');
+        await yieldToBrowser();
         console.group(`    Peak ${pi} Y=${peak.centerY.toFixed(2)}m`);
 
         const peakHits = allHits.filter((_, idx) => hitPeakIndex[idx] === pi);
@@ -810,7 +863,11 @@ export async function buildSceneMap(
 
     for (const level of levels) {
         console.time(`    floor ${level.id}`);
-        level.walls = buildWallGrid(scene, level.walkable, level.floorY, min, config);
+        const wallLabel = `Detecting walls (floor ${level.id + 1}/${levels.length})…`;
+        level.walls = await buildWallGrid(
+            scene, level.walkable, level.floorY, min, config,
+            p => onProgress(0.75 + ((level.id + p) / levels.length) * 0.15, wallLabel)
+        );
         level.walls = filterWallClusters(level.walls, 3);
         const wallCount = level.walls.flat().filter(v => v !== 0).length;
         console.log(`    Floor ${level.id}: ${wallCount} cells with wall(s)`);
@@ -825,6 +882,8 @@ export async function buildSceneMap(
     console.time('rooms');
 
     for (const level of levels) {
+        onProgress(0.9 + (level.id / levels.length) * 0.05, 'Segmenting rooms…');
+        await yieldToBrowser();
         const { roomIds, rooms } = segmentRooms(
             level.walkable, level.walls, gridSize, min.x, min.z, config.doorWidth, config.minRoomArea
         );
@@ -837,11 +896,16 @@ export async function buildSceneMap(
     console.groupEnd();
 
     // Step 6 - Stair / ramp connectors between floors
+    onProgress(0.95, 'Detecting stairs…');
+    await yieldToBrowser();
     console.group('Step 6 - Stair connectors');
     console.time('stairs');
     console.log('Detecting stair connectors…');
 
-    const connectors = detectStairConnectors(allHits, levels, gridSize, config, scene, raycaster, min, rayOriginY);
+    const connectors = await detectStairConnectors(
+        allHits, levels, gridSize, config, scene, raycaster, min, rayOriginY,
+        p => onProgress(0.95 + p * 0.05, 'Detecting stairs…')
+    );
 
     console.log(`${connectors.length} connector(s) detected :`);
     connectors.forEach((c, i) => console.log(
@@ -861,6 +925,7 @@ export async function buildSceneMap(
     console.groupEnd();
 
     console.log('Map built !');
+    onProgress(1, 'Done');
 
     const map: SceneMap = {
         version: CACHE_VERSION,
