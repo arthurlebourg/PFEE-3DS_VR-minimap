@@ -42,10 +42,13 @@ dirLight.position.set(3, 10, 10);
 scene.add(dirLight);
 
 // Model
-const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
+// const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
 // const MODEL_PATH = '/models/plant-3.glb';
 // https://sketchfab.com/3d-models/airbus-a380-2370a0adb0a140fe962972effcd08cbb
 //const MODEL_PATH = '/models/airbus_a380.glb';
+// https://sketchfab.com/3d-models/interactive-architectural-building-model-a3f9604202514c38a4fb7a719fe8af6a
+// https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149
+const MODEL_PATH = '/models/backrooms_vr.glb';
 const MAP_PATH = "/maps/sceneMap.json";
 const model = await loadGLB(MODEL_PATH);
 scene.add(model);
@@ -294,6 +297,7 @@ document.body.appendChild(VRButton.createButton(renderer));
 
 // Main
 const playerDir = new THREE.Vector3();
+const headPos = new THREE.Vector3();
 const timer = new THREE.Timer();
 
 renderer.setAnimationLoop(() => {
@@ -313,8 +317,9 @@ renderer.setAnimationLoop(() => {
 
     if (vrMinimap) {
         camera.getWorldDirection(playerDir);
+        camera.getWorldPosition(headPos); // headset, not the player origin: they differ by the user's position in the play area
         const currentFloor = sceneMap!.levels[floorState.curFloorIdx];
-        renderMinimap(sceneMap!, currentFloor, player.position, playerDir, vrMinimap.canvas, 256, floorState);
+        renderMinimap(sceneMap!, currentFloor, headPos, playerDir, vrMinimap.canvas, 256, floorState);
         vrMinimap.texture.needsUpdate = true;
     }
 

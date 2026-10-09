@@ -4,6 +4,11 @@ import { roomColorCss, NO_ROOM, type Room } from './roomSegmentation.js';
 
 const CACHE_VERSION = 11;
 
+// VR minimap plane size (m) on the left grip
+const VR_MINIMAP_SIZE = 0.3;
+// Canvas pixels per logical pixel: drawing stays in canvasSize units, the texture is sharper on the bigger plane
+const MINIMAP_PIXEL_RATIO = 2;
+
 // Types
 
 /**
@@ -196,7 +201,8 @@ export function renderMinimap(
     floorState?: FloorManagerState
 ): void {
     const ctx = canvas.getContext('2d')!;
-    canvas.width = canvas.height = canvasSize;
+    canvas.width = canvas.height = canvasSize * MINIMAP_PIXEL_RATIO;
+    ctx.setTransform(MINIMAP_PIXEL_RATIO, 0, 0, MINIMAP_PIXEL_RATIO, 0, 0);
 
     // dim floor
     const rows = floor.walkable.length;
@@ -215,12 +221,27 @@ export function renderMinimap(
     const hasRooms = (floor.rooms?.length ?? 0) > 0;
     const defaultFill = hasRooms ? `rgba(119, 119, 119, ${mapAlpha})` : `rgba(80, 180, 120, ${mapAlpha})`;
     const roomFills = (floor.rooms ?? []).map(room => roomColorCss(room.id, parseFloat(mapAlpha)));
+
+    // Room label anchor: the room's cell closest to its centroid (the centroid itself can fall outside an L-shaped room)
+    const { sceneMinX, sceneMinZ } = map.sceneBounds;
+    const roomCentroids = (floor.rooms ?? []).map(room => ({
+        c: (room.center.x - sceneMinX) / map.gridSize - 0.5,
+        r: (room.center.z - sceneMinZ) / map.gridSize - 0.5,
+    }));
+    const roomAnchors = roomCentroids.map(() => ({ r: 0, c: 0, dist: Infinity }));
+
     for (let r = 0; r < rows; r++)
         for (let c = 0; c < cols; c++)
             if (floor.walkable[r][c]) {
                 const roomId = floor.roomIds?.[r]?.[c] ?? NO_ROOM;
                 ctx.fillStyle = roomFills[roomId] ?? defaultFill;
                 ctx.fillRect(offsetX + c * scale, offsetZ + r * scale, scale, scale);
+
+                const centroid = roomCentroids[roomId];
+                if (centroid) {
+                    const dist = (r - centroid.r) ** 2 + (c - centroid.c) ** 2;
+                    if (dist < roomAnchors[roomId].dist) roomAnchors[roomId] = { r, c, dist };
+                }
             }
 
     // Wall segments
@@ -303,6 +324,27 @@ export function renderMinimap(
                     ctx.fillRect(sOffsetX + c * sScale, sOffsetZ + r * sScale, sScale, sScale);
     }
 
+    // Room ids
+    if (!floorState?.triggerHeld) {
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        for (const [id, anchor] of roomAnchors.entries()) {
+            if (anchor.dist === Infinity) continue;
+            const x = offsetX + (anchor.c + 0.5) * scale;
+            const z = offsetZ + (anchor.r + 0.5) * scale;
+            const label = `${id}`;
+            const w = ctx.measureText(label).width + 6;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.beginPath();
+            ctx.roundRect(x - w / 2, z - 7, w, 14, 3);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.fillText(label, x, z + 1);
+        }
+        ctx.textBaseline = 'alphabetic';
+    }
+
     // Overlay 'select floor'
     if (floorState?.triggerHeld) {
         const totalFloors = map.levels.length;
@@ -356,7 +398,6 @@ export function renderMinimap(
 
     if (!floorState?.triggerHeld) {
         // Player position
-        const { sceneMinX, sceneMinZ } = map.sceneBounds;
         const px = offsetX + ((playerPos.x - sceneMinX) / map.gridSize) * scale;
         const pz = offsetZ + ((playerPos.z - sceneMinZ) / map.gridSize) * scale;
         // Clamp player position to the edge of the minimap
@@ -395,11 +436,11 @@ export function createVRMinimap(
     canvasSize = 256
 ): VRMinimap {
     const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = canvasSize;
+    canvas.width = canvas.height = canvasSize * MINIMAP_PIXEL_RATIO;
 
     const texture = new THREE.CanvasTexture(canvas);
     const mesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.15, 0.15),
+        new THREE.PlaneGeometry(VR_MINIMAP_SIZE, VR_MINIMAP_SIZE),
         new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false })
     );
 
