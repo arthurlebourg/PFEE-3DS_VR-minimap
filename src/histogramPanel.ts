@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { HistogramBin } from './minimapBuilder.js';
-import type { FloorLevel } from './minimap.js';
+import { HUD_RENDER_ORDER, type FloorLevel } from './minimap.js';
 
 const BG = 'rgba(10,10,10,0.88)';
 const BAR_COLOR = 'rgba(120,160,220,0.85)';
@@ -96,6 +96,7 @@ export function createHistogramHud(grip: THREE.XRTargetRaySpace): HistogramHud {
     // Same tilt as the config panel offset along local X to sit just to its left
     mesh.position.set(-0.17, 0.05, -0.02);
     mesh.rotation.set(-Math.PI / 2.5, 0, 0);
+    mesh.renderOrder = HUD_RENDER_ORDER;
     grip.add(mesh);
 
     return {

@@ -4,7 +4,7 @@ import type { SceneMap, FloorLevel, MinimapConfig, StairConnector } from './mini
 import { buildWalkableGrid, pickSpawn, survivesErosion } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
 
-const CACHE_VERSION = 11;
+const CACHE_VERSION = 12;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
@@ -895,11 +895,15 @@ export async function buildSceneMap(
         onProgress(0.9 + (level.id / levels.length) * 0.05, 'Segmenting rooms…');
         await yieldToBrowser();
         const { roomIds, rooms } = segmentRooms(
-            level.walkable, level.walls, gridSize, min.x, min.z, config.doorWidth, config.minRoomArea
+            level.walkable, level.walls, gridSize, min.x, min.z, config
         );
         level.roomIds = roomIds;
         level.rooms = rooms;
-        console.log(`    Floor ${level.id}: ${rooms.length} rooms (${rooms.map(r => r.area.toFixed(1) + 'm²').join(', ')})`);
+        const corridorCount = rooms.filter(r => r.type === 'corridor').length;
+        console.log(`    Floor ${level.id}: ${rooms.length - corridorCount} rooms, ${corridorCount} corridors`);
+        rooms.forEach(r => console.log(
+            `        ${r.type === 'corridor' ? 'Corridor' : 'Room'} ${r.id} : ${r.area.toFixed(1)}m², width ${r.width.toFixed(2)}m, elongation ${r.elongation.toFixed(1)}`
+        ));
     }
 
     console.timeEnd('rooms');

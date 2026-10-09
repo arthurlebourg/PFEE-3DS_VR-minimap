@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { EditModeState } from './editMode.js';
+import { HUD_RENDER_ORDER } from './minimap.js';
 import { EDITABLE_PARAMS, resetToDefaults } from './editMode.js';
 import {
     type MapContext,
@@ -313,6 +314,7 @@ export function createVRConfigPanel(grip: THREE.XRTargetRaySpace, canvasSize = 2
 
     mesh.position.set(0, 0.05, -0.02);
     mesh.rotation.set(-Math.PI / 2.5, 0, 0);
+    mesh.renderOrder = HUD_RENDER_ORDER;
     grip.add(mesh);
 
     return { mesh, texture, canvas };

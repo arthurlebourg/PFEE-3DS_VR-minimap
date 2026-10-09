@@ -37,6 +37,9 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     // Room segmentation params
     { key: 'doorWidth', label: 'Door width', min: 0.4, max: 3.0, step: 0.05 },
     { key: 'minRoomArea', label: 'Min room area', min: 0.25, max: 20, step: 0.25 },
+    { key: 'minRoomWidth', label: 'Min room width', min: 0, max: 2.0, step: 0.05 },
+    { key: 'corridorMaxWidth', label: 'Corridor max width', min: 0.5, max: 5.0, step: 0.1 },
+    { key: 'corridorMinElongation', label: 'Corridor min elong.', min: 1.5, max: 15, step: 0.5 },
 ];
 
 export type EditPanel = 'config' | 'floors';

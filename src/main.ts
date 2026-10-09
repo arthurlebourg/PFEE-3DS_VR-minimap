@@ -77,6 +77,9 @@ const defaultConfig = {
     // Room segmentation
     doorWidth: 1.0, // openings narrower than this (m) split two rooms
     minRoomArea: 1.5, // rooms smaller than this (m²) are merged into a neighbour
+    minRoomWidth: 0.5, // rooms narrower than this everywhere (m) are removed (gaps between two walls)
+    corridorMaxWidth: 2.0, // mean width (m) under which a long room...
+    corridorMinElongation: 4.0, // ...with length / width above this is a corridor
 };
 
 console.log("Minimap existence check")
