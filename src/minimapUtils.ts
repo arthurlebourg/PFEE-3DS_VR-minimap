@@ -71,6 +71,41 @@ export function buildWalkableGrid(
 }
 
 /**
+ * Disk structuring element: every offset (dr, dc) with dr² + dc² <= radius²
+ * (radius 2 => the 13-cell diamond-ish disk, 5x5 without its corners)
+ */
+function diskOffsets(radius: number): [number, number][] {
+    const offsets: [number, number][] = [];
+    for (let dr = -radius; dr <= radius; dr++)
+        for (let dc = -radius; dc <= radius; dc++)
+            if (dr * dr + dc * dc <= radius * radius) offsets.push([dr, dc]);
+    return offsets;
+}
+
+/**
+ * Tells if a binary erosion of the grid by a disk keeps at least one cell, without building the eroded grid.
+ * A cell survives when the whole disk centered on it is walkable (outside the grid = not walkable).
+ * Used to drop floors made only of noise (thin strips, scattered cells).
+ *
+ * @param walkable Walkable grid of the floor
+ * @param radius Disk radius, in cells
+ * @returns true if something remains after the erosion
+ */
+export function survivesErosion(walkable: boolean[][], radius: number): boolean {
+    const rows = walkable.length;
+    const cols = walkable[0]?.length ?? 0;
+    const disk = diskOffsets(radius);
+
+    for (let r = radius; r < rows - radius; r++) {
+        for (let c = radius; c < cols - radius; c++) {
+            if (!walkable[r][c]) continue;
+            if (disk.every(([dr, dc]) => walkable[r + dr][c + dc])) return true;
+        }
+    }
+    return false;
+}
+
+/**
  * Select a spawn point
  * 
  * @param bestComponent Largest surface of the floor

@@ -1,13 +1,16 @@
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import type { SceneMap, FloorLevel, MinimapConfig, StairConnector } from './minimap.js';
-import { buildWalkableGrid, pickSpawn } from './minimapUtils.js';
+import { buildWalkableGrid, pickSpawn, survivesErosion } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
 
 const CACHE_VERSION = 11;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
+
+// Disk radius (cells) of the erosion test: a floor that vanishes once eroded is only noise
+const FLOOR_NOISE_EROSION_RADIUS = 2;
 
 // Below this rise, a climb is noise, not a stair
 const MIN_CONNECTOR_RISE = 0.15;
@@ -805,6 +808,13 @@ export async function buildSceneMap(
 
         if (bestComponent.length === 0) {
             console.log('    Not enough surfaces => ignored');
+            console.groupEnd();
+            continue;
+        }
+
+        // Erosion test only: the floor is kept un-eroded
+        if (!survivesErosion(walkable, FLOOR_NOISE_EROSION_RADIUS)) {
+            console.log(`    Nothing left after erosion (disk r=${FLOOR_NOISE_EROSION_RADIUS}) => noise, ignored`);
             console.groupEnd();
             continue;
         }
