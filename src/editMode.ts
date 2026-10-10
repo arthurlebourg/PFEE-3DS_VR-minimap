@@ -4,10 +4,11 @@ import {
     selectNextFloor, toggleAxisMode, nudgeVertical, nudgeHorizontal, cancelPreview,
 } from './floorAdjust.js';
 
-export type ParamCategory = 'floors' | 'walls' | 'stairs' | 'rooms';
+export type ParamCategory = 'general' | 'floors' | 'walls' | 'stairs' | 'rooms';
 
 /** Param groups, shown as collapsible sections (only one open at a time) */
 export const PARAM_CATEGORIES: { key: ParamCategory; label: string }[] = [
+    { key: 'general', label: 'Général' },
     { key: 'floors', label: 'Détection des sols' }, // not 'Étages': that's the floor repositioning tab
     { key: 'walls', label: 'Murs' },
     { key: 'stairs', label: 'Escaliers' },
@@ -31,6 +32,8 @@ export interface EditableParam {
 }
 
 export const EDITABLE_PARAMS: EditableParam[] = [
+    // Smaller cells = finer map but ~1/gridSize² more rays (slower build); radii/areas in cells shrink with it
+    { key: 'gridSize', category: 'general', label: 'Grid size (m)', min: 0.05, max: 1.0, step: 0.05 },
     { key: 'normalThreshold', category: 'floors', label: 'Floor normal thr.', min: 0.1, max: 1.0, step: 0.01 },
     { key: 'minFloorGap', category: 'floors', label: 'Min floor gap', min: 0.05, max: 2.0, step: 0.01 },
     { key: 'histoHeightSize', category: 'floors', label: 'Histogram slice', min: 0.02, max: 0.5, step: 0.01 },
