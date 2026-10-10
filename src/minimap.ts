@@ -116,6 +116,7 @@ export interface SceneMap {
  * @prop minFloorGap gap minimal between 2 floors
  * @prop histoHeightSize Y slice thickness for histogram
  * @prop minPeakArea minimal area to define a peak
+ * @prop floorOpeningRadius Disk radius (cells) of the opening by reconstruction: floor areas with nothing left after an opening by this disk are noise (0 = off)
  * @prop wallScanHeight Height above floorY at which horizontal rays are cast for wall detection
  * @prop wallNormalThreshold Max |normal.y| to classify a surface as a wall (lower = more vertical)
  * @prop wallRayLength Maximum length of horizontal rays for wall detection
@@ -138,6 +139,7 @@ export interface MinimapConfig {
     minFloorGap: number;
     histoHeightSize: number;
     minPeakArea: number;
+    floorOpeningRadius: number;
     wallScanHeight: number;
     wallNormalThreshold: number;
     wallRayLength: number;

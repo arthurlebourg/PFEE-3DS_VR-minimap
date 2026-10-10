@@ -35,6 +35,7 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'minFloorGap', category: 'floors', label: 'Min floor gap', min: 0.05, max: 2.0, step: 0.01 },
     { key: 'histoHeightSize', category: 'floors', label: 'Histogram slice', min: 0.02, max: 0.5, step: 0.01 },
     { key: 'minPeakArea', category: 'floors', label: 'Min peak area', min: 0.5, max: 20, step: 0.5 },
+    { key: 'floorOpeningRadius', category: 'floors', label: 'Opening radius', min: 0, max: 5, step: 1 },
     { key: 'wallScanHeight', category: 'walls', label: 'Wall scan height', min: 0.1, max: 3.0, step: 0.05 },
     { key: 'wallNormalThreshold', category: 'walls', label: 'Wall normal thr.', min: 0.05, max: 0.9, step: 0.05 },
     { key: 'wallRayLength', category: 'walls', label: 'Wall ray length', min: 0.05, max: 1.0, step: 0.05 },

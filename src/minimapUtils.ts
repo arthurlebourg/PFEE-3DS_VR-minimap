@@ -28,28 +28,39 @@ export function buildWalkableGrid(
         }
     }
 
+    return { walkable: raw, bestComponent: largestComponent(raw) };
+}
+
+/**
+ * Largest 4-connected group of walkable cells (where the player spawns)
+ * @param walkable Walkable grid
+ * @returns the component's cells as [row, col]
+ */
+export function largestComponent(walkable: boolean[][]): [number, number][] {
+    const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    const rows = walkable.length;
+    const cols = walkable[0]?.length ?? 0;
     const visited = Array.from({ length: rows }, () => new Array(cols).fill(false));
-    const walkable = Array.from({ length: rows }, () => new Array(cols).fill(false));
     let bestComponent: [number, number][] = [];
 
-    // Propagation
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-            if (!raw[r][c] || visited[r][c]) continue;
+            if (!walkable[r][c] || visited[r][c]) continue;
 
             const cells: [number, number][] = [];
             const queue: [number, number][] = [[r, c]];
             visited[r][c] = true;
 
-            while (queue.length > 0) {
-                const [cr, cc] = queue.shift()!;
+            // BFS order (head index instead of shift()): the spawn is picked in the middle of this list
+            for (let head = 0; head < queue.length; head++) {
+                const [cr, cc] = queue[head];
                 cells.push([cr, cc]);
                 for (const [dr, dc] of DIRS) {
                     const nr = cr + dr, nc = cc + dc;
                     if (
                         nr >= 0 && nr < rows &&
                         nc >= 0 && nc < cols &&
-                        raw[nr][nc] && !visited[nr][nc]
+                        walkable[nr][nc] && !visited[nr][nc]
                     ) {
                         visited[nr][nc] = true;
                         queue.push([nr, nc]);
@@ -57,18 +68,14 @@ export function buildWalkableGrid(
                 }
             }
 
-            // update walkable surface
-            for (const [cr, cc] of cells)
-                walkable[cr][cc] = true;
-
-            // update best component
             if (cells.length > bestComponent.length)
                 bestComponent = cells;
         }
     }
 
-    return { walkable, bestComponent };
+    return bestComponent;
 }
+
 
 /**
  * Disk structuring element: every offset (dr, dc) with dr² + dc² <= radius²
@@ -83,26 +90,73 @@ function diskOffsets(radius: number): [number, number][] {
 }
 
 /**
- * Tells if a binary erosion of the grid by a disk keeps at least one cell, without building the eroded grid.
- * A cell survives when the whole disk centered on it is walkable (outside the grid = not walkable).
- * Used to drop floors made only of noise (thin strips, scattered cells).
+ * Binary erosion (keep a cell if the whole disk around it is walkable) or dilation
+ * (mark a cell if any cell of the disk around it is walkable). Outside the grid = not walkable.
+ */
+function erodeOrDilate(grid: boolean[][], disk: [number, number][], erode: boolean): boolean[][] {
+    const rows = grid.length;
+    const cols = grid[0]?.length ?? 0;
+    const at = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols && grid[r][c];
+    return Array.from({ length: rows }, (_, r) =>
+        Array.from({ length: cols }, (_, c) =>
+            erode
+                ? disk.every(([dr, dc]) => at(r + dr, c + dc))
+                : disk.some(([dr, dc]) => at(r + dr, c + dc))
+        )
+    );
+}
+
+/**
+ * Morphological opening (erosion then dilation) by a disk: removes everything thinner than the disk
+ * (noise, thin strips) and smooths contours, while areas wide enough get their shape back.
+ * Also removes legit passages narrower than the disk (2 × radius + 1 cells): see openingByReconstruction.
  *
  * @param walkable Walkable grid of the floor
- * @param radius Disk radius, in cells
- * @returns true if something remains after the erosion
+ * @param radius Disk radius in cells, 0 = no-op
+ * @returns the opened grid (new array)
  */
-export function survivesErosion(walkable: boolean[][], radius: number): boolean {
+export function morphologicalOpening(walkable: boolean[][], radius: number): boolean[][] {
+    if (radius <= 0) return walkable.map(row => [...row]);
+    const disk = diskOffsets(radius);
+    return erodeOrDilate(erodeOrDilate(walkable, disk, true), disk, false);
+}
+
+/**
+ * Opening by reconstruction: the opening only tells which areas are real, then each 4-connected
+ * area of the original grid that keeps at least one cell after the opening is restored whole.
+ * Isolated noise (nothing survives the opening) is removed, while corridors, doors and stairs
+ * connected to a real room stay intact. Thin spurs stuck to a room stay too.
+ *
+ * @param walkable Walkable grid of the floor
+ * @param radius Disk radius in cells of the opening, 0 = no-op
+ * @returns the reconstructed grid (new array)
+ */
+export function openingByReconstruction(walkable: boolean[][], radius: number): boolean[][] {
+    if (radius <= 0) return walkable.map(row => [...row]);
+
     const rows = walkable.length;
     const cols = walkable[0]?.length ?? 0;
-    const disk = diskOffsets(radius);
+    const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
-    for (let r = radius; r < rows - radius; r++) {
-        for (let c = radius; c < cols - radius; c++) {
-            if (!walkable[r][c]) continue;
-            if (disk.every(([dr, dc]) => walkable[r + dr][c + dc])) return true;
+    // Markers: what survives the opening. Flood fill from them, constrained to the original grid
+    const result = morphologicalOpening(walkable, radius);
+    const queue: [number, number][] = [];
+    for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++)
+            if (result[r][c]) queue.push([r, c]);
+
+    for (let head = 0; head < queue.length; head++) {
+        const [r, c] = queue[head];
+        for (const [dr, dc] of DIRS) {
+            const nr = r + dr, nc = c + dc;
+            if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;
+            if (result[nr][nc] || !walkable[nr][nc]) continue;
+            result[nr][nc] = true;
+            queue.push([nr, nc]);
         }
     }
-    return false;
+
+    return result;
 }
 
 /**

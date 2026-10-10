@@ -48,8 +48,8 @@ scene.add(dirLight);
 //const MODEL_PATH = '/models/airbus_a380.glb';
 // https://sketchfab.com/3d-models/interactive-architectural-building-model-a3f9604202514c38a4fb7a719fe8af6a
 // https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149
-// const MODEL_PATH = '/models/backrooms_vr.glb';
-const MODEL_PATH = '/models/castle_v.glb';
+const MODEL_PATH = '/models/backrooms_vr.glb';
+// const MODEL_PATH = '/models/castle_v.glb';
 const MAP_PATH = "/maps/sceneMap.json";
 const model = await loadGLB(MODEL_PATH);
 scene.add(model);
@@ -58,13 +58,14 @@ scene.add(model);
 const loadingBar = createLoadingBar();
 
 const defaultConfig = {
-    gridSize: 0.5,
+    gridSize: 0.2,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
     voxYThr: 0.35,
     minFloorGap: 0.4,
     histoHeightSize: 0.15,
     minPeakArea: 2,
+    floorOpeningRadius: 2, // cells, opening by reconstruction: areas with nothing wider than this disk are noise and removed (0 = off)
     // Wall detection
     wallScanHeight: 1.0, // metres above floorY where horizontal rays are fired
     wallNormalThreshold: 0.3, // |normal.y| < this => wall (0 = perfectly vertical only)

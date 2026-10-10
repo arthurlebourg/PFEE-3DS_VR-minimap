@@ -1,16 +1,13 @@
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import type { SceneMap, FloorLevel, MinimapConfig, StairConnector } from './minimap.js';
-import { buildWalkableGrid, pickSpawn, survivesErosion } from './minimapUtils.js';
+import { buildWalkableGrid, pickSpawn, openingByReconstruction, largestComponent } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
 
 const CACHE_VERSION = 12;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
-
-// Disk radius (cells) of the erosion test: a floor that vanishes once eroded is only noise
-const FLOOR_NOISE_EROSION_RADIUS = 2;
 
 // Below this rise, a climb is noise, not a stair
 const MIN_CONNECTOR_RISE = 0.15;
@@ -699,7 +696,8 @@ export async function buildSceneMap(
         voxYThr,
         minFloorGap,
         histoHeightSize,
-        minPeakArea
+        minPeakArea,
+        floorOpeningRadius,
     } = config;
 
     const box = new THREE.Box3().setFromObject(scene);
@@ -802,33 +800,39 @@ export async function buildSceneMap(
 
         const peakHits = allHits.filter((_, idx) => hitPeakIndex[idx] === pi);
 
-        const { walkable, bestComponent } = buildWalkableGrid(
+        const { walkable: rawWalkable } = buildWalkableGrid(
             peakHits, peak.centerY, voxYThr, minCells, rows, cols
         );
 
+        // Opening by reconstruction: areas with nothing left after an opening by a disk are noise and removed,
+        // the others are kept whole (corridors, doors, stairs intact); nothing left => the whole floor is noise
+        const openingRadius = Math.round(floorOpeningRadius);
+        const walkable = openingByReconstruction(rawWalkable, openingRadius);
+        const bestComponent = largestComponent(walkable);
+
         if (bestComponent.length === 0) {
-            console.log('    Not enough surfaces => ignored');
+            console.log(`    Nothing left after opening (disk r=${openingRadius}) => noise, ignored`);
             console.groupEnd();
             continue;
         }
 
-        // Erosion test only: the floor is kept un-eroded
-        if (!survivesErosion(walkable, FLOOR_NOISE_EROSION_RADIUS)) {
-            console.log(`    Nothing left after erosion (disk r=${FLOOR_NOISE_EROSION_RADIUS}) => noise, ignored`);
-            console.groupEnd();
-            continue;
-        }
-
-        // LOG INFO
-        const tMinX = Math.min(...peakHits.map(h => min.x + h.c * gridSize));
-        const tMaxX = Math.max(...peakHits.map(h => min.x + (h.c + 1) * gridSize));
-        const tMinZ = Math.min(...peakHits.map(h => min.z + h.r * gridSize));
-        const tMaxZ = Math.max(...peakHits.map(h => min.z + (h.r + 1) * gridSize));
+        // Bounds of what's left after the noise removal, not of the raw hits (noise included)
+        let cMin = Infinity, cMax = -Infinity, rMin = Infinity, rMax = -Infinity;
+        walkable.forEach((row, r) => row.forEach((isWalkable, c) => {
+            if (!isWalkable) return;
+            cMin = Math.min(cMin, c); cMax = Math.max(cMax, c);
+            rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
+        }));
+        const tMinX = min.x + cMin * gridSize;
+        const tMaxX = min.x + (cMax + 1) * gridSize;
+        const tMinZ = min.z + rMin * gridSize;
+        const tMaxZ = min.z + (rMax + 1) * gridSize;
 
         const spawnPoint = pickSpawn(bestComponent, peak.centerY, min.x, min.z, gridSize);
         const walkableCount = walkable.flat().filter(Boolean).length;
+        const rawCount = rawWalkable.flat().filter(Boolean).length;
 
-        console.log(`    ${walkableCount} walkable cells, component : ${bestComponent.length}`);
+        console.log(`    ${walkableCount} walkable cells (${rawCount - walkableCount} noise cells removed), component : ${bestComponent.length}`);
         console.log(`    Bounds XZ : X[${tMinX.toFixed(2)}, ${tMaxX.toFixed(2)}]  Z[${tMinZ.toFixed(2)}, ${tMaxZ.toFixed(2)}]`);
         console.log(`    Spawn : (${spawnPoint.x.toFixed(2)}, ${spawnPoint.y.toFixed(2)}, ${spawnPoint.z.toFixed(2)})`);
         console.groupEnd();

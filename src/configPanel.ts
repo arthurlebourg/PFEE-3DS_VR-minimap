@@ -441,7 +441,8 @@ function renderConfigParamsPanel(state: EditModeState, canvas: HTMLCanvasElement
         ctx.fillText(param.label, 20, y + 13);
         ctx.font = `${isSelected ? 'bold ' : ''}12px monospace`;
         ctx.textAlign = 'right';
-        ctx.fillText(value.toFixed(2), canvasSize - 12, y + 13);
+        // integer params (e.g. opening radius) are rounded when applied, show them the same way
+        ctx.fillText(param.step >= 1 ? `${Math.round(value)}` : value.toFixed(2), canvasSize - 12, y + 13);
 
         // Position of the value within its range
         const t = (value - param.min) / (param.max - param.min);
