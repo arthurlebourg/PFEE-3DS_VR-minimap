@@ -649,14 +649,29 @@ async function adaptiveRaycastQueue(
             const cz = (z0 + z1) / 2;
 
             totalRays++;
-            let ys = castDown(scene, raycaster, origin, downDir, normalThreshold, cx, cz, rayOriginY);
-
-            // empty square
-            if (ys.length === 0) continue;
-
-            touched++;
+            const ys = castDown(scene, raycaster, origin, downDir, normalThreshold, cx, cz, rayOriginY);
+            let hit = ys.length > 0;
 
             const isLeaf = (rowEnd - rowStart) <= 1 && (colEnd - colStart) <= 1;
+
+            // Center missed: try the centers of the 4 corner cells before dropping the square,
+            // e.g. a square straddling an outer wall has its center outside but floor on the inside
+            if (!hit && !isLeaf) {
+                const cornerXs = [min.x + (colStart + 0.5) * gridSize, min.x + (colEnd - 0.5) * gridSize];
+                const cornerZs = [min.z + (rowStart + 0.5) * gridSize, min.z + (rowEnd - 0.5) * gridSize];
+                corners: for (const x of cornerXs) {
+                    for (const z of cornerZs) {
+                        totalRays++;
+                        hit = castDown(scene, raycaster, origin, downDir, normalThreshold, x, z, rayOriginY).length > 0;
+                        if (hit) break corners;
+                    }
+                }
+            }
+
+            // empty square
+            if (!hit) continue;
+
+            touched++;
 
             if (isLeaf) {
                 const r = rowStart;
