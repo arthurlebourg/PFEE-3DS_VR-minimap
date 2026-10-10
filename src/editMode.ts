@@ -82,14 +82,18 @@ export interface EditModeState {
     floors: FloorAdjustState;
 }
 
-export function createEditMode(initialConfig: MinimapConfig): EditModeState {
+/**
+ * @param defaults Config restored by resetToDefaults
+ * @param initialConfig Config the panels start from (e.g. the one the loaded map was built with)
+ */
+export function createEditMode(defaults: MinimapConfig, initialConfig: MinimapConfig = defaults): EditModeState {
     return {
         active: false,
         panel: 'config',
         openCategory: null,
         selectedRow: 0,
         config: { ...initialConfig },
-        defaults: { ...initialConfig },
+        defaults: { ...defaults },
         isRebuilding: false,
         isDirty: false,
         floors: createFloorAdjustState(),

@@ -1,10 +1,8 @@
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-import type { SceneMap, FloorLevel, MinimapConfig, StairConnector } from './minimap.js';
+import { CACHE_VERSION, type SceneMap, type FloorLevel, type MinimapConfig, type StairConnector } from './minimap.js';
 import { buildWalkableGrid, pickSpawn, openingByReconstruction, largestComponent } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
-
-const CACHE_VERSION = 12;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
@@ -947,6 +945,8 @@ export async function buildSceneMap(
 
     const map: SceneMap = {
         version: CACHE_VERSION,
+        modelSha1: null, // set by the caller, which loaded the model
+        config: { ...config },
         sceneBounds: { sceneMinX: min.x, sceneMinZ: min.z },
         bounds: { minX: globalMinX, maxX: globalMaxX, minZ: globalMinZ, maxZ: globalMaxZ },
         cols: Math.ceil((globalMaxX - globalMinX) / gridSize),

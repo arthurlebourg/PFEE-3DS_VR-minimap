@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import type { FloorManagerState } from './floorManager.js';
 import { roomColorCss, NO_ROOM, type Room } from './roomSegmentation.js';
 
-const CACHE_VERSION = 12;
+// Bump whenever the SceneMap format changes: older saved maps are then rebuilt
+export const CACHE_VERSION = 13;
 
 // Minimap fills: classic rooms get one hue each, corridors share one neutral sand color, stairs are orange + hatched + outlined
 const CORRIDOR_RGB = '215, 200, 160';
@@ -95,9 +96,13 @@ export interface StairConnector {
  * @prop rows rows's length
  * @prop gridSize size of a cell
  * @prop levels Available floors
+ * @prop modelSha1 SHA-1 of the GLB file the map was built from (null if it couldn't be computed)
+ * @prop config Parameters the map was built with
  */
 export interface SceneMap {
     version: number;
+    modelSha1: string | null;
+    config: MinimapConfig;
     sceneBounds: { sceneMinX: number; sceneMinZ: number; };
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
     cols: number;
@@ -181,14 +186,21 @@ export function saveSceneMapAsFile(map: SceneMap): void {
 /**
  * Load a map from a file
  * @param mapPath Path to the map file
+ * @param modelSha1 SHA-1 of the loaded model: a map built from another model is rejected (null = can't check)
  */
-export async function loadSceneMapFromFile(mapPath: string): Promise<SceneMap | null> {
+export async function loadSceneMapFromFile(mapPath: string, modelSha1: string | null): Promise<SceneMap | null> {
     try {
         const res = await fetch(mapPath);
         if (!res.ok) return null;
         const map = JSON.parse(await res.text(), JsonToInf) as SceneMap;
         if (map.version !== CACHE_VERSION) {
             console.log('SceneMap: deprecated version, need rebuild');
+            return null;
+        }
+        if (modelSha1 === null || map.modelSha1 === null) {
+            console.warn('SceneMap: model SHA-1 unavailable, cannot check the map matches the loaded model');
+        } else if (map.modelSha1 !== modelSha1) {
+            console.log(`SceneMap: built for another model (sha1 ${map.modelSha1}, loaded model ${modelSha1}), need rebuild`);
             return null;
         }
         console.log(`SceneMap: load from ${mapPath} (${map.levels.length} floors)`);

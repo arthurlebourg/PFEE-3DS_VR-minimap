@@ -5,7 +5,7 @@ import { createPlayer, updateMovement, placePlayerOnFloor } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
     renderMinimap, createVRMinimap,
-    type VRMinimap,
+    type VRMinimap, type SceneMap, type MinimapConfig,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
@@ -48,17 +48,17 @@ scene.add(dirLight);
 //const MODEL_PATH = '/models/airbus_a380.glb';
 // https://sketchfab.com/3d-models/interactive-architectural-building-model-a3f9604202514c38a4fb7a719fe8af6a
 // https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149
-const MODEL_PATH = '/models/backrooms_vr.glb';
-// const MODEL_PATH = '/models/castle_v.glb';
+// const MODEL_PATH = '/models/backrooms_vr.glb';
+const MODEL_PATH = '/models/castle_v.glb';
 const MAP_PATH = "/maps/sceneMap.json";
-const model = await loadGLB(MODEL_PATH);
+const { model, sha1: modelSha1 } = await loadGLB(MODEL_PATH);
 scene.add(model);
 
 // SceneMap
 const loadingBar = createLoadingBar();
 
 const defaultConfig = {
-    gridSize: 0.2,
+    gridSize: 0.5,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
     voxYThr: 0.35,
@@ -85,21 +85,30 @@ const defaultConfig = {
 };
 
 console.log("Minimap existence check")
-let sceneMap = await loadSceneMapFromFile(MAP_PATH);
+// Build a map of the loaded model, tagged with the model's SHA-1 so a saved copy can be checked on load
+async function buildMap(config: MinimapConfig): Promise<{ map: SceneMap; histogram: HistogramBin[] }> {
+    loadingBar.show();
+    const built = await buildSceneMap(model, config, loadingBar.set);
+    loadingBar.hide();
+    built.map.modelSha1 = modelSha1;
+    return built;
+}
+
+let sceneMap = await loadSceneMapFromFile(MAP_PATH, modelSha1);
 console.log(sceneMap);
 let histogram: HistogramBin[] = [];
 if (!sceneMap) {
-    loadingBar.show();
-    const built = await buildSceneMap(model, defaultConfig, loadingBar.set);
-    loadingBar.hide();
+    const built = await buildMap(defaultConfig);
     sceneMap = built.map;
     histogram = built.histogram;
 }
 
 let debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
 
-// Edit mode - live minimap config tuning (desktop panel + in-VR panel)
-const editMode = createEditMode(defaultConfig);
+// Edit mode - live minimap config tuning (desktop panel + in-VR panel).
+// Starts from the config the current map was built with (a loaded map may differ from defaultConfig);
+// params added since that map was saved fall back to defaultConfig.
+const editMode = createEditMode(defaultConfig, { ...defaultConfig, ...sceneMap!.config });
 
 let floorMoveVisual: FloorMoveVisual | null = null;
 let floorMoveVisualFloorId = -1;
@@ -120,9 +129,7 @@ async function rebuildMinimap(): Promise<void> {
     if (editMode.isRebuilding) return;
     editMode.isRebuilding = true;
 
-    loadingBar.show();
-    const built = await buildSceneMap(model, editMode.config, loadingBar.set);
-    loadingBar.hide();
+    const built = await buildMap(editMode.config);
 
     // render loop keeps running during the build: swap the old map only once the new one is ready
     debugOverlay.dispose();
