@@ -48,7 +48,8 @@ scene.add(dirLight);
 //const MODEL_PATH = '/models/airbus_a380.glb';
 // https://sketchfab.com/3d-models/interactive-architectural-building-model-a3f9604202514c38a4fb7a719fe8af6a
 // https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149
-const MODEL_PATH = '/models/backrooms_vr.glb';
+// const MODEL_PATH = '/models/backrooms_vr.glb';
+const MODEL_PATH = '/models/castle_v.glb';
 const MAP_PATH = "/maps/sceneMap.json";
 const model = await loadGLB(MODEL_PATH);
 scene.add(model);
@@ -57,7 +58,7 @@ scene.add(model);
 const loadingBar = createLoadingBar();
 
 const defaultConfig = {
-    gridSize: 0.2,
+    gridSize: 0.5,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
     voxYThr: 0.35,
@@ -292,6 +293,9 @@ function getVRJoystick(): { x: number; y: number } {
     return { x: 0, y: 0 };
 }
 
+// Room / corridor ids on the minimap, toggled with L
+let showRoomLabels = true;
+
 // Floor state
 const floorState = createFloorManager(0);
 
@@ -322,7 +326,7 @@ renderer.setAnimationLoop(() => {
         camera.getWorldDirection(playerDir);
         camera.getWorldPosition(headPos); // headset, not the player origin: they differ by the user's position in the play area
         const currentFloor = sceneMap!.levels[floorState.curFloorIdx];
-        renderMinimap(sceneMap!, currentFloor, headPos, playerDir, vrMinimap.canvas, 256, floorState);
+        renderMinimap(sceneMap!, currentFloor, headPos, playerDir, vrMinimap.canvas, 256, floorState, showRoomLabels);
         vrMinimap.texture.needsUpdate = true;
     }
 
@@ -362,6 +366,7 @@ window.addEventListener('resize', () => {
 // Display debug overlay
 window.addEventListener('keydown', e => {
     if (e.key === 'h' || e.key === 'H') debugOverlay.toggle();
+    if (e.key === 'l' || e.key === 'L') showRoomLabels = !showRoomLabels;
     if (e.key === 'e' || e.key === 'E') {
         editMode.active = !editMode.active;
         desktopConfigPanel.sync();

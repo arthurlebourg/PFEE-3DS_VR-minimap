@@ -8,7 +8,7 @@ export type ParamCategory = 'floors' | 'walls' | 'stairs' | 'rooms';
 
 /** Param groups, shown as collapsible sections (only one open at a time) */
 export const PARAM_CATEGORIES: { key: ParamCategory; label: string }[] = [
-    { key: 'floors', label: 'Étages' },
+    { key: 'floors', label: 'Détection des sols' }, // not 'Étages': that's the floor repositioning tab
     { key: 'walls', label: 'Murs' },
     { key: 'stairs', label: 'Escaliers' },
     { key: 'rooms', label: 'Pièces & couloirs' },
@@ -31,7 +31,7 @@ export interface EditableParam {
 }
 
 export const EDITABLE_PARAMS: EditableParam[] = [
-    { key: 'normalThreshold', category: 'floors', label: 'Normal threshold', min: 0.1, max: 1.0, step: 0.01 },
+    { key: 'normalThreshold', category: 'floors', label: 'Floor normal thr.', min: 0.1, max: 1.0, step: 0.01 },
     { key: 'minFloorGap', category: 'floors', label: 'Min floor gap', min: 0.05, max: 2.0, step: 0.01 },
     { key: 'histoHeightSize', category: 'floors', label: 'Histogram slice', min: 0.02, max: 0.5, step: 0.01 },
     { key: 'minPeakArea', category: 'floors', label: 'Min peak area', min: 0.5, max: 20, step: 0.5 },

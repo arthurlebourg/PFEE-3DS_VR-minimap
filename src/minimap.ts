@@ -206,6 +206,7 @@ export async function loadSceneMapFromFile(mapPath: string): Promise<SceneMap | 
  * @param canvas html canvas
  * @param canvasSize canvas size
  * @param floorState current floor
+ * @param showRoomLabels draw room / corridor ids
  */
 export function renderMinimap(
     map: SceneMap,
@@ -214,7 +215,8 @@ export function renderMinimap(
     playerDir: THREE.Vector3,
     canvas: HTMLCanvasElement,
     canvasSize = 256,
-    floorState?: FloorManagerState
+    floorState?: FloorManagerState,
+    showRoomLabels = true,
 ): void {
     const ctx = canvas.getContext('2d')!;
     canvas.width = canvas.height = canvasSize * MINIMAP_PIXEL_RATIO;
@@ -367,7 +369,7 @@ export function renderMinimap(
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         for (const [id, anchor] of roomAnchors.entries()) {
-            if (anchor.dist === Infinity) continue;
+            if (!showRoomLabels || anchor.dist === Infinity) continue;
             const isCorridor = floor.rooms[id].type === 'corridor';
             const x = offsetX + (anchor.c + 0.5) * scale;
             const z = offsetZ + (anchor.r + 0.5) * scale;
