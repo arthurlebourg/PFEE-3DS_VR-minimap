@@ -30,6 +30,3 @@ package-lock.json
 models/*
 !models/README.md
 *.glb
-
-# avoid generated maps
-maps/*
