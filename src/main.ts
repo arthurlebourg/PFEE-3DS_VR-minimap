@@ -4,19 +4,20 @@ import { loadGLB } from './glbLoader.js';
 import { createPlayer, updateMovement, placePlayerOnFloor } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
-    renderMinimap, createVRMinimap,
-    type VRMinimap, type SceneMap, type MinimapConfig,
+    renderMinimap, renderMinimapStatus, createVRMinimap,
+    type VRMinimap, type SceneMap, type MinimapConfig, type MinimapStatus, type FloorLevel,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager } from './floorManager.js';
-import { initXrMove, teleportTo } from './xrMove.ts';
-import { createDebugFloorOverlay } from './debugMinimap.ts';
+import { initXrMove } from './xrMove.ts';
+import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
-import { createEditMode, createEditModeInputHandler } from './editMode.js';
+import { createEditMode, createEditModeInputHandler, getRebuildAction, setCategoryOpen } from './editMode.js';
 import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
 import { commitFloorMove, type MapContext } from './floorAdjust.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
 import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type HistogramHud } from './histogramPanel.js';
 import { createLoadingBar } from './loadingBar.js';
+import { createStartScreen, type StartSelection } from './startScreen.js';
 
 // Patch XRWebGLBinding bug
 if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
@@ -41,23 +42,7 @@ const dirLight = new THREE.DirectionalLight(0xffffff, 2);
 dirLight.position.set(3, 10, 10);
 scene.add(dirLight);
 
-// Model
-// const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
-// const MODEL_PATH = '/models/plant-3.glb';
-// https://sketchfab.com/3d-models/airbus-a380-2370a0adb0a140fe962972effcd08cbb
-//const MODEL_PATH = '/models/airbus_a380.glb';
-// https://sketchfab.com/3d-models/interactive-architectural-building-model-a3f9604202514c38a4fb7a719fe8af6a
-// https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149
-// const MODEL_PATH = '/models/backrooms_vr.glb';
-const MODEL_PATH = '/models/castle_v.glb';
-const MAP_PATH = "/maps/sceneMap.json";
-const { model, sha1: modelSha1 } = await loadGLB(MODEL_PATH);
-scene.add(model);
-
-// SceneMap
-const loadingBar = createLoadingBar();
-
-const defaultConfig = {
+const defaultConfig: MinimapConfig = {
     gridSize: 0.5,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
@@ -84,31 +69,66 @@ const defaultConfig = {
     corridorMinElongation: 4.0, // ...with length / width above this is a corridor
 };
 
-console.log("Minimap existence check")
-// Build a map of the loaded model, tagged with the model's SHA-1 so a saved copy can be checked on load
-async function buildMap(config: MinimapConfig): Promise<{ map: SceneMap; histogram: HistogramBin[] }> {
-    loadingBar.show();
-    const built = await buildSceneMap(model, config, loadingBar.set);
-    loadingBar.hide();
-    built.map.modelSha1 = modelSha1;
-    return built;
+// Start screen: pick a model from models/ and one of its maps from maps/ (or none), then load them.
+// A failed load goes back to the selection
+const MB = 1024 * 1024;
+const startScreen = createStartScreen();
+
+async function loadSelection(): Promise<{
+    selection: StartSelection;
+    model: THREE.Group;
+    modelSha1: string | null;
+    map: SceneMap | null;
+}> {
+    for (;;) {
+        const selection = await startScreen.waitForSelection();
+        try {
+            startScreen.setProgress(0, 'Téléchargement du modèle…');
+            const { model, sha1 } = await loadGLB(`/models/${encodeURIComponent(selection.modelFile)}`, (loaded, total) => {
+                if (total === 0) startScreen.setProgress(null, `Téléchargement du modèle… ${(loaded / MB).toFixed(0)} Mo`);
+                else if (loaded < total) startScreen.setProgress(loaded / total, `Téléchargement du modèle… ${(loaded / MB).toFixed(0)} / ${(total / MB).toFixed(0)} Mo`);
+                else startScreen.setProgress(null, 'Préparation du modèle…');
+            });
+
+            let map: SceneMap | null = null;
+            if (selection.mapFile) {
+                startScreen.setProgress(null, 'Chargement de la carte…');
+                map = await loadSceneMapFromFile(`/maps/${encodeURIComponent(selection.mapFile)}`, sha1);
+                if (!map) console.warn(`SceneMap: ${selection.mapFile} couldn't be loaded, building the map instead`);
+            }
+            return { selection, model, modelSha1: sha1, map };
+        } catch (e) {
+            startScreen.showError(`Échec du chargement de ${selection.modelFile} : ${e instanceof Error ? e.message : e}`);
+        }
+    }
 }
 
-let sceneMap = await loadSceneMapFromFile(MAP_PATH, modelSha1);
-console.log(sceneMap);
+const { selection, model, modelSha1, map: loadedMap } = await loadSelection();
+startScreen.close();
+scene.add(model);
+const modelBounds = new THREE.Box3().setFromObject(model);
+
+// SceneMap: null until loaded or built. Building runs in the background: the scene is usable meanwhile
+let sceneMap: SceneMap | null = loadedMap;
 let histogram: HistogramBin[] = [];
-if (!sceneMap) {
-    const built = await buildMap(defaultConfig);
-    sceneMap = built.map;
-    histogram = built.histogram;
-}
+let buildError: string | null = null;
+const loadingBar = createLoadingBar();
 
-let debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
+let debugOverlayVisible = true;
+let debugOverlay: DebugFloorOverlay | null = sceneMap ? createDebugFloorOverlay(scene, sceneMap) : null;
+
+// Floor state
+const floorState = createFloorManager(0);
+
+/** Floor the player is on, null while there's no map (or the map found no floor) */
+function currentLevel(): FloorLevel | null {
+    return sceneMap?.levels[floorState.curFloorIdx] ?? null;
+}
 
 // Edit mode - live minimap config tuning (desktop panel + in-VR panel).
 // Starts from the config the current map was built with (a loaded map may differ from defaultConfig);
 // params added since that map was saved fall back to defaultConfig.
-const editMode = createEditMode(defaultConfig, { ...defaultConfig, ...sceneMap!.config });
+const editMode = createEditMode(defaultConfig, { ...defaultConfig, ...sceneMap?.config });
 
 let floorMoveVisual: FloorMoveVisual | null = null;
 let floorMoveVisualFloorId = -1;
@@ -122,32 +142,105 @@ function disposeFloorMoveVisual(): void {
 }
 
 function getMapContext(): MapContext {
-    return { levelCount: sceneMap!.levels.length, gridSize: sceneMap!.gridSize, levels: sceneMap!.levels };
+    if (!sceneMap) return { levelCount: 0, gridSize: editMode.config.gridSize, levels: [] };
+    return { levelCount: sceneMap.levels.length, gridSize: sceneMap.gridSize, levels: sceneMap.levels };
 }
 
+function recreateDebugOverlay(): void {
+    debugOverlay?.dispose();
+    debugOverlay = sceneMap ? createDebugFloorOverlay(scene, sceneMap) : null;
+    if (debugOverlay && !debugOverlayVisible) debugOverlay.toggle();
+}
+
+// Background build: pauses often in VR so the headset keeps its framerate, less on desktop for a faster build
+const VR_BUILD_SLICE_MS = 8;
+const DESKTOP_BUILD_SLICE_MS = 30;
+let buildController: AbortController | null = null;
+
+/**
+ * Build the map of the model with the edit mode config, in the background. A build already running
+ * is restarted with the current config. The current map stays displayed until the new one is ready
+ */
 async function rebuildMinimap(): Promise<void> {
-    if (editMode.isRebuilding) return;
+    buildController?.abort();
+    const controller = new AbortController();
+    buildController = controller;
+
+    // the panels keep editing editMode.config during the build
+    const config = { ...editMode.config };
     editMode.isRebuilding = true;
-
-    const built = await buildMap(editMode.config);
-
-    // render loop keeps running during the build: swap the old map only once the new one is ready
-    debugOverlay.dispose();
-    disposeFloorMoveVisual();
-    sceneMap = built.map;
-    histogram = built.histogram;
-    debugOverlay = createDebugFloorOverlay(scene, sceneMap);
-
-    floorState.curFloorIdx = Math.min(floorState.curFloorIdx, sceneMap.levels.length - 1);
-    floorState.prevFloorIdx = floorState.curFloorIdx;
-    editMode.floors.selectedFloorIdx = Math.min(editMode.floors.selectedFloorIdx, sceneMap.levels.length - 1);
-
-    editMode.isRebuilding = false;
     editMode.isDirty = false;
+    editMode.buildProgress = 0;
+    editMode.buildLabel = '';
+    buildError = null;
+    loadingBar.set(0, '');
+    loadingBar.show();
+
+    try {
+        const built = await buildSceneMap(
+            model, config,
+            (progress, label) => {
+                if (buildController !== controller) return;
+                editMode.buildProgress = progress;
+                editMode.buildLabel = label;
+                loadingBar.set(progress, label);
+            },
+            {
+                signal: controller.signal,
+                sliceMs: () => renderer.xr.isPresenting ? VR_BUILD_SLICE_MS : DESKTOP_BUILD_SLICE_MS,
+            },
+        );
+        built.map.modelSha1 = modelSha1;
+        applyMap(built.map, built.histogram);
+    } catch (e) {
+        if (controller.signal.aborted) return; // restarted or cancelled
+        console.error('Minimap build failed:', e);
+        buildError = e instanceof Error ? e.message : String(e);
+        editMode.isDirty = true;
+    } finally {
+        if (buildController === controller) {
+            buildController = null;
+            editMode.isRebuilding = false;
+            loadingBar.hide();
+        }
+    }
+}
+
+/** Stop the running build, the current map (if any) stays */
+function cancelBuild(): void {
+    if (!buildController) return;
+    buildController.abort();
+    buildController = null;
+    editMode.isRebuilding = false;
+    editMode.isDirty = true; // the edited config hasn't been applied
+    loadingBar.hide();
+}
+
+/** Rebuild button of the VR panel: build, restart with the edited config, or stop */
+function onRebuildButton(): void {
+    if (getRebuildAction(editMode) === 'cancel') cancelBuild();
+    else void rebuildMinimap();
+}
+
+function applyMap(map: SceneMap, bins: HistogramBin[]): void {
+    const isFirstMap = sceneMap === null;
+
+    disposeFloorMoveVisual();
+    sceneMap = map;
+    histogram = bins;
+    recreateDebugOverlay();
+
+    const lastLevel = Math.max(0, sceneMap.levels.length - 1);
+    floorState.curFloorIdx = Math.min(floorState.curFloorIdx, lastLevel);
+    floorState.prevFloorIdx = floorState.curFloorIdx;
+    editMode.floors.selectedFloorIdx = Math.min(editMode.floors.selectedFloorIdx, lastLevel);
+
+    // The player was placed without knowing the floors: move them to the spawn point, unless they walked away
+    if (isFirstMap && spawnIsProvisional && renderer.xr.isPresenting) spawnPending = true;
 }
 
 function saveMinimap(): void {
-    if (sceneMap) saveSceneMapAsFile(sceneMap);
+    if (sceneMap) saveSceneMapAsFile(sceneMap, selection.modelFile);
 }
 
 function confirmFloorMove(): void {
@@ -157,8 +250,7 @@ function confirmFloorMove(): void {
 
     commitFloorMove(editMode.floors, level, sceneMap.gridSize);
 
-    debugOverlay.dispose();
-    debugOverlay = createDebugFloorOverlay(scene, sceneMap);
+    recreateDebugOverlay();
     disposeFloorMoveVisual();
 }
 
@@ -180,8 +272,8 @@ function ensureFloorMoveVisual(): void {
     floorMoveVisual.update(editMode.floors);
 }
 
-const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
-const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
+const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, cancelBuild, saveMinimap, confirmFloorMove, getMapContext);
+const editModeInputUpdate = createEditModeInputHandler(editMode, onRebuildButton, saveMinimap, confirmFloorMove, getMapContext);
 const desktopHistogramPanel = createDesktopHistogramPanel();
 
 // Player
@@ -224,6 +316,8 @@ initXrMove(renderer.xr);
 
 // Spawn is applied on the first frame with a tracked headset pose, the pose isn't known yet at sessionstart
 let spawnPending = false;
+// Placed without a map (center of the model, on its lowest point) and hasn't moved since
+let spawnIsProvisional = false;
 
 renderer.xr.addEventListener('sessionstart', () => {
     spawnPending = true;
@@ -234,8 +328,15 @@ function trySpawn(): void {
     const refSpace = renderer.xr.getReferenceSpace();
     if (!frame || !refSpace || !frame.getViewerPose(refSpace)) return;
 
-    const level = sceneMap!.levels[floorState.curFloorIdx];
-    placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
+    const level = currentLevel();
+    if (level) {
+        placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
+        spawnIsProvisional = false;
+    } else {
+        const center = modelBounds.getCenter(new THREE.Vector3());
+        placePlayerOnFloor(player, camera, center.x, modelBounds.min.y, center.z);
+        spawnIsProvisional = true;
+    }
     spawnPending = false;
 }
 
@@ -254,6 +355,30 @@ renderer.xr.addEventListener('sessionend', () => {
         vrMinimap = null;
     }
 });
+
+/** Shown on the VR minimap while there's no map to draw */
+function getMinimapStatus(): MinimapStatus {
+    // B only rebuilds from the config tab of the edit mode
+    const rebuildHint = (action: string) => editMode.active && editMode.panel === 'config'
+        ? `B : ${action}`
+        : `A : edit mode, puis B : ${action}`;
+
+    if (editMode.isRebuilding) {
+        return {
+            title: 'Calcul de la carte…',
+            detail: editMode.buildLabel,
+            progress: editMode.buildProgress,
+            hints: editMode.active ? ['Paramètres modifiables pendant le calcul', rebuildHint('arrêter / relancer')] : ['A : edit mode (paramètres)'],
+        };
+    }
+    if (buildError) {
+        return { title: 'Échec du calcul', detail: buildError, progress: null, hints: [rebuildHint('relancer')] };
+    }
+    if (sceneMap) {
+        return { title: 'Aucun sol détecté', detail: 'Ajuste les paramètres de détection des sols', progress: null, hints: [rebuildHint('recalculer')] };
+    }
+    return { title: 'Aucune carte', detail: 'Règle les paramètres puis lance le calcul', progress: null, hints: [rebuildHint('calculer')] };
+}
 
 // Edit mode panel (right grip) — A button toggles, B button rebuilds
 const rightGrip = renderer.xr.getControllerGrip(1);
@@ -304,8 +429,17 @@ function getVRJoystick(): { x: number; y: number } {
 // Room / corridor ids on the minimap, toggled with L
 let showRoomLabels = true;
 
-// Floor state
-const floorState = createFloorManager(0);
+// No map to start from: build it right away, or open the edit mode first to tune the parameters
+// (the grid size, in General, is what makes a build long)
+if (!sceneMap) {
+    if (selection.autoBuild || selection.mapFile) {
+        void rebuildMinimap();
+    } else {
+        editMode.active = true;
+        editMode.panel = 'config';
+        setCategoryOpen(editMode, 'general', true);
+    }
+}
 
 // VR button only once everything is set up: entering VR earlier would miss the sessionstart listeners (spawn, minimap...)
 document.body.appendChild(VRButton.createButton(renderer));
@@ -321,20 +455,26 @@ renderer.setAnimationLoop(() => {
     if (spawnPending) trySpawn();
 
     if (!floorState.isCoolingDown) {
-        updateMovement(player, camera, getVRJoystick());
+        const joystick = getVRJoystick();
+        if (joystick.x !== 0 || joystick.y !== 0) spawnIsProvisional = false;
+        updateMovement(player, camera, joystick);
     }
 
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
-    if (!editMode.active) {
-        updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player, camera);
+    if (!editMode.active && sceneMap && sceneMap.levels.length > 0) {
+        updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera);
     }
 
     if (vrMinimap) {
-        camera.getWorldDirection(playerDir);
-        camera.getWorldPosition(headPos); // headset, not the player origin: they differ by the user's position in the play area
-        const currentFloor = sceneMap!.levels[floorState.curFloorIdx];
-        renderMinimap(sceneMap!, currentFloor, headPos, playerDir, vrMinimap.canvas, 256, floorState, showRoomLabels);
+        const level = currentLevel();
+        if (sceneMap && level) {
+            camera.getWorldDirection(playerDir);
+            camera.getWorldPosition(headPos); // headset, not the player origin: they differ by the user's position in the play area
+            renderMinimap(sceneMap, level, headPos, playerDir, vrMinimap.canvas, 256, floorState, showRoomLabels);
+        } else {
+            renderMinimapStatus(getMinimapStatus(), vrMinimap.canvas, 256);
+        }
         vrMinimap.texture.needsUpdate = true;
     }
 
@@ -348,16 +488,17 @@ renderer.setAnimationLoop(() => {
         }
     }
 
+    const levels = sceneMap?.levels ?? [];
     if (histogramHud) {
         histogramHud.mesh.visible = editMode.active;
         if (editMode.active) {
-            renderHistogram(histogram, sceneMap!.levels, histogramHud.canvas);
+            renderHistogram(histogram, levels, histogramHud.canvas);
             histogramHud.texture.needsUpdate = true;
         }
     }
 
     desktopHistogramPanel.setVisible(editMode.active);
-    if (editMode.active) renderHistogram(histogram, sceneMap!.levels, desktopHistogramPanel.canvas);
+    if (editMode.active) renderHistogram(histogram, levels, desktopHistogramPanel.canvas);
 
     desktopConfigPanel.sync();
 
@@ -373,11 +514,14 @@ window.addEventListener('resize', () => {
 
 // Display debug overlay
 window.addEventListener('keydown', e => {
-    if (e.key === 'h' || e.key === 'H') debugOverlay.toggle();
+    if (e.key === 'h' || e.key === 'H') {
+        debugOverlayVisible = !debugOverlayVisible;
+        debugOverlay?.toggle();
+    }
     if (e.key === 'l' || e.key === 'L') showRoomLabels = !showRoomLabels;
     if (e.key === 'e' || e.key === 'E') {
         editMode.active = !editMode.active;
         desktopConfigPanel.sync();
     }
-    if ((e.key === 'r' || e.key === 'R') && editMode.active) rebuildMinimap();
+    if ((e.key === 'r' || e.key === 'R') && editMode.active) void rebuildMinimap();
 });

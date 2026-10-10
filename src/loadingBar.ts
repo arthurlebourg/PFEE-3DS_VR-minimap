@@ -6,7 +6,7 @@ export interface LoadingBar {
 }
 
 /**
- * Desktop loading bar, shown while the minimap is being built
+ * Desktop loading bar, shown while the minimap is being built in the background
  */
 export function createLoadingBar(): LoadingBar {
     const root = document.createElement('div');
@@ -30,7 +30,12 @@ export function createLoadingBar(): LoadingBar {
     Object.assign(fill.style, { height: '100%', width: '0%', background: '#88aaff', transition: 'width 0.1s linear' });
     track.appendChild(fill);
 
-    root.append(text, track);
+    // The build doesn't block the scene: tell how to change its parameters meanwhile
+    const hint = document.createElement('div');
+    Object.assign(hint.style, { marginTop: '6px', color: '#aaa' });
+    hint.textContent = 'E : edit mode (modifier les paramètres)';
+
+    root.append(text, track, hint);
     document.body.appendChild(root);
 
     return {

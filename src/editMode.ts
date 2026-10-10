@@ -69,8 +69,10 @@ export type EditPanel = 'config' | 'floors';
  * @prop selectedRow index into getConfigRows() currently highlighted (VR navigation)
  * @prop config live MinimapConfig, mutated in place by the panels
  * @prop defaults original MinimapConfig, used by resetToDefaults
- * @prop isRebuilding a rebuild is in progress
- * @prop isDirty config changed since the last successful rebuild
+ * @prop isRebuilding a rebuild is in progress (it runs in the background, the config stays editable)
+ * @prop buildProgress progress of the running rebuild in [0, 1]
+ * @prop buildLabel current step of the running rebuild
+ * @prop isDirty config changed since the last rebuild was started
  * @prop floors floor repositioning sub-state
  */
 export interface EditModeState {
@@ -81,6 +83,8 @@ export interface EditModeState {
     config: MinimapConfig;
     defaults: MinimapConfig;
     isRebuilding: boolean;
+    buildProgress: number;
+    buildLabel: string;
     isDirty: boolean;
     floors: FloorAdjustState;
 }
@@ -98,6 +102,8 @@ export function createEditMode(defaults: MinimapConfig, initialConfig: MinimapCo
         config: { ...initialConfig },
         defaults: { ...defaults },
         isRebuilding: false,
+        buildProgress: 0,
+        buildLabel: '',
         isDirty: false,
         floors: createFloorAdjustState(),
     };
@@ -110,6 +116,17 @@ export function createEditMode(defaults: MinimapConfig, initialConfig: MinimapCo
 export function resetToDefaults(state: EditModeState): void {
     state.config = { ...state.defaults };
     state.isDirty = true;
+}
+
+export type RebuildAction = 'build' | 'restart' | 'cancel';
+
+/**
+ * What the rebuild button does right now: during a rebuild, restart it with the edited config,
+ * or stop it when the config didn't change since it started
+ */
+export function getRebuildAction(state: EditModeState): RebuildAction {
+    if (!state.isRebuilding) return 'build';
+    return state.isDirty ? 'restart' : 'cancel';
 }
 
 /**
@@ -184,7 +201,7 @@ function pressedEdge(gp: Gamepad, buttonIdx: number, prev: boolean): [fired: boo
  *    - stick up/down (no trigger)      : move the selection (category headers + params of the open one)
  *    - stick click                     : open/close the selected category (or the selected param's one)
  *    - stick left/right + trigger held : adjust the selected param's value, or open (→) / close (←) a selected category
- *    - B/Y button                      : rebuild the minimap (raycast)
+ *    - B/Y button                      : rebuild the minimap (raycast), see getRebuildAction
  *  Right hand, panel = 'floors':
  *    - stick up/down (no trigger) : select the floor to reposition
  *    - stick click                : toggle axis mode (vertical Y <-> horizontal X/Z)

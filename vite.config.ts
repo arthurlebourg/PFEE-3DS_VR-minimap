@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
+import { assetCatalog } from './vitePlugins/assetCatalog.ts';
 
 export default defineConfig({
     server: {
@@ -7,6 +8,7 @@ export default defineConfig({
         https: true,
     },
     plugins: [
-        basicSsl()
+        basicSsl(),
+        assetCatalog(),
     ]
 });
