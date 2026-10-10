@@ -9,7 +9,14 @@
  *     removed, so they don't leak through doors into narrow corridors.
  *  4. Leftover cells (corridors, closets...) become their own regions, then regions
  *     smaller than minRoomArea are merged into the neighbour they share the longest border with.
+ *  5. Shape of each room, from a distance transform restricted to the room (an open doorway
+ *     counts as its edge): too thin => removed (gaps between two walls), long and narrow => corridor.
+ *     Only area and distances are used, no bounding box, so L-shaped or curved corridors work too.
  */
+
+import type { MinimapConfig } from './minimap.js';
+
+export type RoomType = 'room' | 'corridor';
 
 /**
  * @typedef Room
@@ -17,12 +24,18 @@
  * @prop cellCount Number of cells in the room
  * @prop area Room area in m²
  * @prop center World XZ centroid of the room
+ * @prop type Classic room or corridor
+ * @prop width Mean width (m), estimated from the distance transform
+ * @prop elongation Length / width ratio (area / width²)
  */
 export interface Room {
     id: number;
     cellCount: number;
     area: number;
     center: { x: number; z: number };
+    type: RoomType;
+    width: number;
+    elongation: number;
 }
 
 /** Value stored in roomIds for cells that belong to no room */
@@ -85,6 +98,66 @@ class MinHeap {
     }
 }
 
+const DIAGONALS: { dr: number; dc: number; v: number; h: number }[] = [
+    { dr: -1, dc: 1, v: N, h: E },
+    { dr: 1, dc: 1, v: S, h: E },
+    { dr: 1, dc: -1, v: S, h: W },
+    { dr: -1, dc: -1, v: N, h: W },
+];
+
+/**
+ * Distance (in cells) of every walkable cell to the nearest obstacle
+ * (Dijkstra, 8-connected chamfer). Border cells (a side that can't be crossed) are at 0.5.
+ * @param canStep Can we step from (r, c) to its neighbour in direction d
+ */
+function distanceTransform(
+    rows: number,
+    cols: number,
+    walkable: boolean[][],
+    canStep: (r: number, c: number, d: number) => boolean,
+): Float32Array {
+    const dist = new Float32Array(rows * cols).fill(Infinity);
+    const heap = new MinHeap();
+
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            if (!walkable[r][c]) continue;
+            // Border cell: at least one side is a wall or the void => half a cell from the obstacle
+            if (!canStep(r, c, N) || !canStep(r, c, E) || !canStep(r, c, S) || !canStep(r, c, W)) {
+                dist[r * cols + c] = 0.5;
+                heap.push(0.5, r * cols + c);
+            }
+        }
+    }
+
+    while (heap.size > 0) {
+        const [d, idx] = heap.pop();
+        if (d > dist[idx]) continue;
+        const r = Math.floor(idx / cols), c = idx % cols;
+
+        for (let k = 0; k < 4; k++) {
+            if (!canStep(r, c, k)) continue;
+            const nIdx = (r + DIRS[k].dr) * cols + (c + DIRS[k].dc);
+            if (d + 1 < dist[nIdx]) {
+                dist[nIdx] = d + 1;
+                heap.push(d + 1, nIdx);
+            }
+        }
+        // Diagonal only when both L-shaped paths are free (no corner cutting through walls)
+        for (const { dr, dc, v, h } of DIAGONALS) {
+            if (!canStep(r, c, v) || !canStep(r, c, h)) continue;
+            if (!canStep(r + dr, c, h) || !canStep(r, c + dc, v)) continue;
+            const nIdx = (r + dr) * cols + (c + dc);
+            if (d + Math.SQRT2 < dist[nIdx]) {
+                dist[nIdx] = d + Math.SQRT2;
+                heap.push(d + Math.SQRT2, nIdx);
+            }
+        }
+    }
+
+    return dist;
+}
+
 /**
  * Segment a floor into rooms
  * @param walkable Walkable grid of the floor
@@ -92,8 +165,9 @@ class MinHeap {
  * @param gridSize Size of a cell (m)
  * @param sceneMinX Scene min X (grid origin)
  * @param sceneMinZ Scene min Z (grid origin)
- * @param doorWidth Openings narrower than this (m) separate two rooms
- * @param minRoomArea Regions smaller than this (m²) are merged into a neighbour room
+ * @param config doorWidth (openings narrower than this split two rooms), minRoomArea (smaller regions
+ * are merged into a neighbour), minRoomWidth (thinner rooms are removed), corridorMaxWidth and
+ * corridorMinElongation (narrow and long enough => corridor)
  * @returns room id per cell (NO_ROOM if none) + room list
  */
 export function segmentRooms(
@@ -102,9 +176,9 @@ export function segmentRooms(
     gridSize: number,
     sceneMinX: number,
     sceneMinZ: number,
-    doorWidth: number,
-    minRoomArea: number,
+    config: Pick<MinimapConfig, 'doorWidth' | 'minRoomArea' | 'minRoomWidth' | 'corridorMaxWidth' | 'corridorMinElongation'>,
 ): { roomIds: number[][]; rooms: Room[] } {
+    const { doorWidth, minRoomArea, minRoomWidth, corridorMaxWidth, corridorMinElongation } = config;
     const rows = walkable.length;
     const cols = walkable[0]?.length ?? 0;
     const total = rows * cols;
@@ -120,52 +194,8 @@ export function segmentRooms(
         return ((walls[r]?.[c] ?? 0) & bit) === 0 && ((walls[nr]?.[nc] ?? 0) & opposite) === 0;
     };
 
-    // Step 1 - distance transform (Dijkstra, 8-connected chamfer, walls block propagation)
-    const dist = new Float32Array(total).fill(Infinity);
-    const heap = new MinHeap();
-
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            if (!walkable[r][c]) continue;
-            // Border cell: at least one side is a wall or the void => half a cell from the obstacle
-            if (!passable(r, c, N) || !passable(r, c, E) || !passable(r, c, S) || !passable(r, c, W)) {
-                dist[r * cols + c] = 0.5;
-                heap.push(0.5, r * cols + c);
-            }
-        }
-    }
-
-    const diagonals: { dr: number; dc: number; v: number; h: number }[] = [
-        { dr: -1, dc: 1, v: N, h: E },
-        { dr: 1, dc: 1, v: S, h: E },
-        { dr: 1, dc: -1, v: S, h: W },
-        { dr: -1, dc: -1, v: N, h: W },
-    ];
-
-    while (heap.size > 0) {
-        const [d, idx] = heap.pop();
-        if (d > dist[idx]) continue;
-        const r = Math.floor(idx / cols), c = idx % cols;
-
-        for (let k = 0; k < 4; k++) {
-            if (!passable(r, c, k)) continue;
-            const nIdx = (r + DIRS[k].dr) * cols + (c + DIRS[k].dc);
-            if (d + 1 < dist[nIdx]) {
-                dist[nIdx] = d + 1;
-                heap.push(d + 1, nIdx);
-            }
-        }
-        // Diagonal only when both L-shaped paths are free (no corner cutting through walls)
-        for (const { dr, dc, v, h } of diagonals) {
-            if (!passable(r, c, v) || !passable(r, c, h)) continue;
-            if (!passable(r + dr, c, h) || !passable(r, c + dc, v)) continue;
-            const nIdx = (r + dr) * cols + (c + dc);
-            if (d + Math.SQRT2 < dist[nIdx]) {
-                dist[nIdx] = d + Math.SQRT2;
-                heap.push(d + Math.SQRT2, nIdx);
-            }
-        }
-    }
+    // Step 1 - distance transform, walls block propagation
+    const dist = distanceTransform(rows, cols, walkable, passable);
 
     // Step 2 - cores = cells far enough from any obstacle
     const coreThreshold = doorWidth / 2 / gridSize;
@@ -212,7 +242,7 @@ export function segmentRooms(
     // cells much farther than that are behind a narrow opening (doorway, corridor) => left for step 4.
     const neighbours = [
         ...DIRS.map((d, k) => ({ dr: d.dr, dc: d.dc, ok: (r: number, c: number) => passable(r, c, k) })),
-        ...diagonals.map(({ dr, dc, v, h }) => ({
+        ...DIAGONALS.map(({ dr, dc, v, h }) => ({
             dr, dc,
             ok: (r: number, c: number) =>
                 passable(r, c, v) && passable(r, c, h) && passable(r + dr, c, h) && passable(r, c + dc, v),
@@ -291,38 +321,75 @@ export function segmentRooms(
         }
     }
 
-    // Final compact numbering + stats. Isolated tiny regions (no neighbour to merge into) get NO_ROOM.
-    const finalId = new Map<number, number>();
-    const rooms: Room[] = [];
-    const sumX: number[] = [], sumZ: number[] = [];
-    const roomIds: number[][] = Array.from({ length: rows }, () => new Array(cols).fill(NO_ROOM));
-
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const l = label[r * cols + c];
-            if (l === NO_ROOM) continue;
-            const root = find(l);
-            if (sizes[root] < minCells) continue;
-
-            let id = finalId.get(root);
-            if (id === undefined) {
-                id = rooms.length;
-                finalId.set(root, id);
-                rooms.push({ id, cellCount: 0, area: 0, center: { x: 0, z: 0 } });
-                sumX.push(0);
-                sumZ.push(0);
-            }
-            roomIds[r][c] = id;
-            rooms[id].cellCount++;
-            sumX[id] += sceneMinX + (c + 0.5) * gridSize;
-            sumZ[id] += sceneMinZ + (r + 0.5) * gridSize;
+    // Provisional numbering. Isolated tiny regions (no neighbour to merge into) get NO_ROOM.
+    const roomOf = new Int32Array(total).fill(NO_ROOM);
+    const rootToRoom = new Map<number, number>();
+    for (let idx = 0; idx < total; idx++) {
+        if (label[idx] === NO_ROOM) continue;
+        const root = find(label[idx]);
+        if (sizes[root] < minCells) continue;
+        let id = rootToRoom.get(root);
+        if (id === undefined) {
+            id = rootToRoom.size;
+            rootToRoom.set(root, id);
         }
+        roomOf[idx] = id;
+    }
+    const roomCount = rootToRoom.size;
+
+    // Step 5 - shape of each room, distances measured inside the room only
+    const sameRoom = (r: number, c: number, d: number): boolean =>
+        passable(r, c, d) && roomOf[r * cols + c] === roomOf[(r + DIRS[d].dr) * cols + (c + DIRS[d].dc)];
+    const roomDist = distanceTransform(rows, cols, walkable, sameRoom);
+
+    const cellCount = new Array(roomCount).fill(0);
+    const maxDist = new Array(roomCount).fill(0);
+    const sumDist = new Array(roomCount).fill(0);
+    const sumX = new Array(roomCount).fill(0);
+    const sumZ = new Array(roomCount).fill(0);
+    for (let idx = 0; idx < total; idx++) {
+        const id = roomOf[idx];
+        if (id === NO_ROOM) continue;
+        const r = Math.floor(idx / cols), c = idx % cols;
+        cellCount[id]++;
+        maxDist[id] = Math.max(maxDist[id], roomDist[idx]);
+        sumDist[id] += roomDist[idx];
+        sumX[id] += sceneMinX + (c + 0.5) * gridSize;
+        sumZ[id] += sceneMinZ + (r + 0.5) * gridSize;
     }
 
-    for (const room of rooms) {
-        room.area = room.cellCount * gridSize * gridSize;
-        room.center = { x: sumX[room.id] / room.cellCount, z: sumZ[room.id] / room.cellCount };
+    // Final compact numbering, without the rooms too thin to be one
+    const finalId = new Array(roomCount).fill(NO_ROOM);
+    const rooms: Room[] = [];
+    for (let id = 0; id < roomCount; id++) {
+        // Widest spot of the room: 2 × the farthest any cell is from the room's edge
+        if (2 * maxDist[id] * gridSize < minRoomWidth) continue;
+
+        // Mean width: across a strip of width w, distances average w/4 => w ≈ 4 × mean distance.
+        // length ≈ area / width => elongation = length / width = area / width², whatever the shape
+        const area = cellCount[id] * gridSize * gridSize;
+        const width = 4 * (sumDist[id] / cellCount[id]) * gridSize;
+        const elongation = area / (width * width);
+        const type: RoomType = width <= corridorMaxWidth && elongation >= corridorMinElongation ? 'corridor' : 'room';
+
+        finalId[id] = rooms.length;
+        rooms.push({
+            id: rooms.length,
+            cellCount: cellCount[id],
+            area,
+            center: { x: sumX[id] / cellCount[id], z: sumZ[id] / cellCount[id] },
+            type,
+            width,
+            elongation,
+        });
     }
+
+    const roomIds: number[][] = Array.from({ length: rows }, (_, r) =>
+        Array.from({ length: cols }, (_, c) => {
+            const id = roomOf[r * cols + c];
+            return id === NO_ROOM ? NO_ROOM : finalId[id];
+        })
+    );
 
     return { roomIds, rooms };
 }

@@ -23,22 +23,40 @@ function computeAutoScale(model: THREE.Object3D): number {
     return Math.pow(10, power);
 }
 
-export function loadGLB(path: string = "/models/apartment_2_4f7f_in_japan.glb"): Promise<THREE.Group> {
-    return new Promise((resolve, reject) => {
-        loader.load(path, (gltf) =>
-            {
-                const model = gltf.scene;
-                model.position.set(0, 0, 0);
+/**
+ * SHA-1 of the file content, hex encoded. null when unavailable (crypto.subtle needs a secure context: https or localhost)
+ */
+async function sha1Hex(buffer: ArrayBuffer): Promise<string | null> {
+    if (!globalThis.crypto?.subtle) return null;
+    const digest = await crypto.subtle.digest('SHA-1', buffer);
+    return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
-                const scale = computeAutoScale(model);
-                model.scale.setScalar(scale);
-                console.log(`Model loaded successfully (auto-scale = ${scale})`);
+/**
+ * Load a GLB model, along with the SHA-1 of its file (used to check a saved map belongs to this model)
+ * @param path Model URL
+ */
+export async function loadGLB(path: string = "/models/apartment_2_4f7f_in_japan.glb"): Promise<{ model: THREE.Group; sha1: string | null }> {
+    try {
+        // Fetched once: the same bytes are hashed then parsed
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buffer = await res.arrayBuffer();
 
-                resolve(model);
-            },
-            // log progress details disabled
-            (xhr) => { /* console.log((xhr.loaded / xhr.total * 100) + '%'); */ },
-            (error) => { console.error('Error loading model (check file path):', error); }
-        );
-    });
+        // Hash before parsing, in case the parser takes ownership of the buffer
+        const sha1 = await sha1Hex(buffer);
+        const gltf = await loader.parseAsync(buffer, THREE.LoaderUtils.extractUrlBase(path));
+
+        const model = gltf.scene;
+        model.position.set(0, 0, 0);
+
+        const scale = computeAutoScale(model);
+        model.scale.setScalar(scale);
+        console.log(`Model loaded successfully (auto-scale = ${scale}, sha1 = ${sha1 ?? 'unavailable'})`);
+
+        return { model, sha1 };
+    } catch (error) {
+        console.error('Error loading model (check file path):', error);
+        throw error;
+    }
 }

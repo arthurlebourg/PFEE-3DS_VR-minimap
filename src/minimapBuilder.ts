@@ -1,10 +1,8 @@
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-import type { SceneMap, FloorLevel, MinimapConfig, StairConnector } from './minimap.js';
-import { buildWalkableGrid, pickSpawn } from './minimapUtils.js';
+import { CACHE_VERSION, type SceneMap, type FloorLevel, type MinimapConfig, type StairConnector } from './minimap.js';
+import { buildWalkableGrid, pickSpawn, openingByReconstruction, largestComponent } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
-
-const CACHE_VERSION = 11;
 
 // Globbing grid size = gridSize * factor
 const MACRO_CELL_MULTIPLIER = 5;
@@ -696,7 +694,8 @@ export async function buildSceneMap(
         voxYThr,
         minFloorGap,
         histoHeightSize,
-        minPeakArea
+        minPeakArea,
+        floorOpeningRadius,
     } = config;
 
     const box = new THREE.Box3().setFromObject(scene);
@@ -799,26 +798,39 @@ export async function buildSceneMap(
 
         const peakHits = allHits.filter((_, idx) => hitPeakIndex[idx] === pi);
 
-        const { walkable, bestComponent } = buildWalkableGrid(
+        const { walkable: rawWalkable } = buildWalkableGrid(
             peakHits, peak.centerY, voxYThr, minCells, rows, cols
         );
 
+        // Opening by reconstruction: areas with nothing left after an opening by a disk are noise and removed,
+        // the others are kept whole (corridors, doors, stairs intact); nothing left => the whole floor is noise
+        const openingRadius = Math.round(floorOpeningRadius);
+        const walkable = openingByReconstruction(rawWalkable, openingRadius);
+        const bestComponent = largestComponent(walkable);
+
         if (bestComponent.length === 0) {
-            console.log('    Not enough surfaces => ignored');
+            console.log(`    Nothing left after opening (disk r=${openingRadius}) => noise, ignored`);
             console.groupEnd();
             continue;
         }
 
-        // LOG INFO
-        const tMinX = Math.min(...peakHits.map(h => min.x + h.c * gridSize));
-        const tMaxX = Math.max(...peakHits.map(h => min.x + (h.c + 1) * gridSize));
-        const tMinZ = Math.min(...peakHits.map(h => min.z + h.r * gridSize));
-        const tMaxZ = Math.max(...peakHits.map(h => min.z + (h.r + 1) * gridSize));
+        // Bounds of what's left after the noise removal, not of the raw hits (noise included)
+        let cMin = Infinity, cMax = -Infinity, rMin = Infinity, rMax = -Infinity;
+        walkable.forEach((row, r) => row.forEach((isWalkable, c) => {
+            if (!isWalkable) return;
+            cMin = Math.min(cMin, c); cMax = Math.max(cMax, c);
+            rMin = Math.min(rMin, r); rMax = Math.max(rMax, r);
+        }));
+        const tMinX = min.x + cMin * gridSize;
+        const tMaxX = min.x + (cMax + 1) * gridSize;
+        const tMinZ = min.z + rMin * gridSize;
+        const tMaxZ = min.z + (rMax + 1) * gridSize;
 
         const spawnPoint = pickSpawn(bestComponent, peak.centerY, min.x, min.z, gridSize);
         const walkableCount = walkable.flat().filter(Boolean).length;
+        const rawCount = rawWalkable.flat().filter(Boolean).length;
 
-        console.log(`    ${walkableCount} walkable cells, component : ${bestComponent.length}`);
+        console.log(`    ${walkableCount} walkable cells (${rawCount - walkableCount} noise cells removed), component : ${bestComponent.length}`);
         console.log(`    Bounds XZ : X[${tMinX.toFixed(2)}, ${tMaxX.toFixed(2)}]  Z[${tMinZ.toFixed(2)}, ${tMaxZ.toFixed(2)}]`);
         console.log(`    Spawn : (${spawnPoint.x.toFixed(2)}, ${spawnPoint.y.toFixed(2)}, ${spawnPoint.z.toFixed(2)})`);
         console.groupEnd();
@@ -885,11 +897,15 @@ export async function buildSceneMap(
         onProgress(0.9 + (level.id / levels.length) * 0.05, 'Segmenting rooms…');
         await yieldToBrowser();
         const { roomIds, rooms } = segmentRooms(
-            level.walkable, level.walls, gridSize, min.x, min.z, config.doorWidth, config.minRoomArea
+            level.walkable, level.walls, gridSize, min.x, min.z, config
         );
         level.roomIds = roomIds;
         level.rooms = rooms;
-        console.log(`    Floor ${level.id}: ${rooms.length} rooms (${rooms.map(r => r.area.toFixed(1) + 'm²').join(', ')})`);
+        const corridorCount = rooms.filter(r => r.type === 'corridor').length;
+        console.log(`    Floor ${level.id}: ${rooms.length - corridorCount} rooms, ${corridorCount} corridors`);
+        rooms.forEach(r => console.log(
+            `        ${r.type === 'corridor' ? 'Corridor' : 'Room'} ${r.id} : ${r.area.toFixed(1)}m², width ${r.width.toFixed(2)}m, elongation ${r.elongation.toFixed(1)}`
+        ));
     }
 
     console.timeEnd('rooms');
@@ -929,6 +945,8 @@ export async function buildSceneMap(
 
     const map: SceneMap = {
         version: CACHE_VERSION,
+        modelSha1: null, // set by the caller, which loaded the model
+        config: { ...config },
         sceneBounds: { sceneMinX: min.x, sceneMinZ: min.z },
         bounds: { minX: globalMinX, maxX: globalMaxX, minZ: globalMinZ, maxZ: globalMaxZ },
         cols: Math.ceil((globalMaxX - globalMinX) / gridSize),

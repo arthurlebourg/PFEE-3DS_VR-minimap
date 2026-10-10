@@ -5,7 +5,7 @@ import { createPlayer, updateMovement, placePlayerOnFloor } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
     renderMinimap, createVRMinimap,
-    type VRMinimap,
+    type VRMinimap, type SceneMap, type MinimapConfig,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove, teleportTo } from './xrMove.ts';
@@ -42,25 +42,30 @@ dirLight.position.set(3, 10, 10);
 scene.add(dirLight);
 
 // Model
-const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
+// const MODEL_PATH = '/models/apartment_2_4f7f_in_japan.glb';
 // const MODEL_PATH = '/models/plant-3.glb';
 // https://sketchfab.com/3d-models/airbus-a380-2370a0adb0a140fe962972effcd08cbb
 //const MODEL_PATH = '/models/airbus_a380.glb';
+// https://sketchfab.com/3d-models/interactive-architectural-building-model-a3f9604202514c38a4fb7a719fe8af6a
+// https://sketchfab.com/3d-models/backrooms-vr-1a5c397f0a43408fa38b09ea5c041149
+// const MODEL_PATH = '/models/backrooms_vr.glb';
+const MODEL_PATH = '/models/castle_v.glb';
 const MAP_PATH = "/maps/sceneMap.json";
-const model = await loadGLB(MODEL_PATH);
+const { model, sha1: modelSha1 } = await loadGLB(MODEL_PATH);
 scene.add(model);
 
 // SceneMap
 const loadingBar = createLoadingBar();
 
 const defaultConfig = {
-    gridSize: 0.2,
+    gridSize: 0.5,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
     voxYThr: 0.35,
     minFloorGap: 0.4,
     histoHeightSize: 0.15,
     minPeakArea: 2,
+    floorOpeningRadius: 2, // cells, opening by reconstruction: areas with nothing wider than this disk are noise and removed (0 = off)
     // Wall detection
     wallScanHeight: 1.0, // metres above floorY where horizontal rays are fired
     wallNormalThreshold: 0.3, // |normal.y| < this => wall (0 = perfectly vertical only)
@@ -74,24 +79,36 @@ const defaultConfig = {
     // Room segmentation
     doorWidth: 1.0, // openings narrower than this (m) split two rooms
     minRoomArea: 1.5, // rooms smaller than this (m²) are merged into a neighbour
+    minRoomWidth: 0.5, // rooms narrower than this everywhere (m) are removed (gaps between two walls)
+    corridorMaxWidth: 2.0, // mean width (m) under which a long room...
+    corridorMinElongation: 4.0, // ...with length / width above this is a corridor
 };
 
 console.log("Minimap existence check")
-let sceneMap = await loadSceneMapFromFile(MAP_PATH);
+// Build a map of the loaded model, tagged with the model's SHA-1 so a saved copy can be checked on load
+async function buildMap(config: MinimapConfig): Promise<{ map: SceneMap; histogram: HistogramBin[] }> {
+    loadingBar.show();
+    const built = await buildSceneMap(model, config, loadingBar.set);
+    loadingBar.hide();
+    built.map.modelSha1 = modelSha1;
+    return built;
+}
+
+let sceneMap = await loadSceneMapFromFile(MAP_PATH, modelSha1);
 console.log(sceneMap);
 let histogram: HistogramBin[] = [];
 if (!sceneMap) {
-    loadingBar.show();
-    const built = await buildSceneMap(model, defaultConfig, loadingBar.set);
-    loadingBar.hide();
+    const built = await buildMap(defaultConfig);
     sceneMap = built.map;
     histogram = built.histogram;
 }
 
 let debugOverlay = createDebugFloorOverlay(scene, sceneMap!);
 
-// Edit mode - live minimap config tuning (desktop panel + in-VR panel)
-const editMode = createEditMode(defaultConfig);
+// Edit mode - live minimap config tuning (desktop panel + in-VR panel).
+// Starts from the config the current map was built with (a loaded map may differ from defaultConfig);
+// params added since that map was saved fall back to defaultConfig.
+const editMode = createEditMode(defaultConfig, { ...defaultConfig, ...sceneMap!.config });
 
 let floorMoveVisual: FloorMoveVisual | null = null;
 let floorMoveVisualFloorId = -1;
@@ -112,9 +129,7 @@ async function rebuildMinimap(): Promise<void> {
     if (editMode.isRebuilding) return;
     editMode.isRebuilding = true;
 
-    loadingBar.show();
-    const built = await buildSceneMap(model, editMode.config, loadingBar.set);
-    loadingBar.hide();
+    const built = await buildMap(editMode.config);
 
     // render loop keeps running during the build: swap the old map only once the new one is ready
     debugOverlay.dispose();
@@ -286,6 +301,9 @@ function getVRJoystick(): { x: number; y: number } {
     return { x: 0, y: 0 };
 }
 
+// Room / corridor ids on the minimap, toggled with L
+let showRoomLabels = true;
+
 // Floor state
 const floorState = createFloorManager(0);
 
@@ -294,6 +312,7 @@ document.body.appendChild(VRButton.createButton(renderer));
 
 // Main
 const playerDir = new THREE.Vector3();
+const headPos = new THREE.Vector3();
 const timer = new THREE.Timer();
 
 renderer.setAnimationLoop(() => {
@@ -313,8 +332,9 @@ renderer.setAnimationLoop(() => {
 
     if (vrMinimap) {
         camera.getWorldDirection(playerDir);
+        camera.getWorldPosition(headPos); // headset, not the player origin: they differ by the user's position in the play area
         const currentFloor = sceneMap!.levels[floorState.curFloorIdx];
-        renderMinimap(sceneMap!, currentFloor, player.position, playerDir, vrMinimap.canvas, 256, floorState);
+        renderMinimap(sceneMap!, currentFloor, headPos, playerDir, vrMinimap.canvas, 256, floorState, showRoomLabels);
         vrMinimap.texture.needsUpdate = true;
     }
 
@@ -354,6 +374,7 @@ window.addEventListener('resize', () => {
 // Display debug overlay
 window.addEventListener('keydown', e => {
     if (e.key === 'h' || e.key === 'H') debugOverlay.toggle();
+    if (e.key === 'l' || e.key === 'L') showRoomLabels = !showRoomLabels;
     if (e.key === 'e' || e.key === 'E') {
         editMode.active = !editMode.active;
         desktopConfigPanel.sync();
