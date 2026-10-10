@@ -33,15 +33,48 @@ async function sha1Hex(buffer: ArrayBuffer): Promise<string | null> {
 }
 
 /**
+ * Download a file, reporting progress when the server sends its size
+ * @param onProgress Called with the received and total byte counts (total = 0 when unknown)
+ */
+async function fetchWithProgress(path: string, onProgress: (loaded: number, total: number) => void): Promise<ArrayBuffer> {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const total = Number(res.headers.get('Content-Length')) || 0;
+    if (!res.body) return res.arrayBuffer();
+
+    // Written in place when the size is known: big models (hundreds of MB) aren't held twice in memory
+    let bytes = new Uint8Array(total);
+    let loaded = 0;
+    const reader = res.body.getReader();
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (loaded + value.length > bytes.length) {
+            // unknown or wrong Content-Length (e.g. compressed response): grow
+            const grown = new Uint8Array(Math.max(bytes.length * 2, loaded + value.length));
+            grown.set(bytes.subarray(0, loaded));
+            bytes = grown;
+        }
+        bytes.set(value, loaded);
+        loaded += value.length;
+        onProgress(loaded, total);
+    }
+
+    return loaded === bytes.length ? bytes.buffer : bytes.buffer.slice(0, loaded);
+}
+
+/**
  * Load a GLB model, along with the SHA-1 of its file (used to check a saved map belongs to this model)
  * @param path Model URL
+ * @param onDownloadProgress Called while the file downloads, with the received and total byte counts (total = 0 when unknown)
  */
-export async function loadGLB(path: string = "/models/apartment_2_4f7f_in_japan.glb"): Promise<{ model: THREE.Group; sha1: string | null }> {
+export async function loadGLB(
+    path: string,
+    onDownloadProgress: (loaded: number, total: number) => void = () => { },
+): Promise<{ model: THREE.Group; sha1: string | null }> {
     try {
         // Fetched once: the same bytes are hashed then parsed
-        const res = await fetch(path);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const buffer = await res.arrayBuffer();
+        const buffer = await fetchWithProgress(path, onDownloadProgress);
 
         // Hash before parsing, in case the parser takes ownership of the buffer
         const sha1 = await sha1Hex(buffer);
