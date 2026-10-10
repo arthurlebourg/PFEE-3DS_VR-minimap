@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { EditModeState } from './editMode.js';
 import { HUD_RENDER_ORDER } from './minimap.js';
-import { EDITABLE_PARAMS, resetToDefaults } from './editMode.js';
+import { EDITABLE_PARAMS, PARAM_CATEGORIES, type ParamCategory, getConfigRows, resetToDefaults, toggleCategory } from './editMode.js';
 import {
     type MapContext,
     selectNextFloor, toggleAxisMode, nudgeVerticalStep, nudgeHorizontal, cancelPreview, hasPendingPreview,
@@ -38,6 +38,7 @@ export function createDesktopConfigPanel(
         padding: '10px 14px', borderRadius: '6px',
         border: '1px solid #444', display: 'none',
         minWidth: '260px', zIndex: '1000',
+        maxHeight: 'calc(100vh - 16px)', overflowY: 'auto', boxSizing: 'border-box',
     });
 
     const title = document.createElement('div');
@@ -84,6 +85,28 @@ export function createDesktopConfigPanel(
     const inputs: Partial<Record<string, HTMLInputElement>> = {};
     const valueLabels: Partial<Record<string, HTMLSpanElement>> = {};
 
+    // One collapsible section per category, only one open at a time (shared with the VR panel)
+    const categoryHeaders = new Map<ParamCategory, HTMLButtonElement>();
+    const categoryBodies = new Map<ParamCategory, HTMLDivElement>();
+    for (const { key, label } of PARAM_CATEGORIES) {
+        const header = document.createElement('button');
+        header.dataset.label = `${label} (${EDITABLE_PARAMS.filter(p => p.category === key).length})`;
+        Object.assign(header.style, {
+            display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', marginBottom: '4px',
+            background: '#2a2a2a', color: '#ffee44', border: '1px solid #444',
+            borderRadius: '4px', cursor: 'pointer', fontFamily: 'monospace', fontSize: '12px',
+        });
+        header.addEventListener('click', () => { toggleCategory(state, key); sync(); });
+        configSection.appendChild(header);
+
+        const body = document.createElement('div');
+        Object.assign(body.style, { padding: '2px 4px 6px' });
+        configSection.appendChild(body);
+
+        categoryHeaders.set(key, header);
+        categoryBodies.set(key, body);
+    }
+
     for (const param of EDITABLE_PARAMS) {
         const row = document.createElement('div');
         row.style.marginBottom = '6px';
@@ -111,7 +134,7 @@ export function createDesktopConfigPanel(
         });
 
         row.appendChild(input);
-        configSection.appendChild(row);
+        categoryBodies.get(param.category)!.appendChild(row);
 
         inputs[param.key] = input;
         valueLabels[param.key] = valueSpan;
@@ -260,6 +283,13 @@ export function createDesktopConfigPanel(
         configSection.style.display = state.panel === 'config' ? 'block' : 'none';
         floorsSection.style.display = state.panel === 'floors' ? 'block' : 'none';
 
+        for (const { key } of PARAM_CATEGORIES) {
+            const open = state.openCategory === key;
+            const header = categoryHeaders.get(key)!;
+            header.textContent = `${open ? '▾' : '▸'} ${header.dataset.label}`;
+            categoryBodies.get(key)!.style.display = open ? 'block' : 'none';
+        }
+
         for (const param of EDITABLE_PARAMS) {
             inputs[param.key]!.value = String(state.config[param.key]);
             valueLabels[param.key]!.textContent = state.config[param.key].toFixed(2);
@@ -302,9 +332,19 @@ export interface VRConfigPanel {
     canvas: HTMLCanvasElement;
 }
 
+// Canvas pixels per logical pixel: drawing stays in canvasSize units, small texts stay readable in the headset
+const VR_PANEL_PIXEL_RATIO = 2;
+
+function prepareCanvas(canvas: HTMLCanvasElement, canvasSize: number): CanvasRenderingContext2D {
+    const ctx = canvas.getContext('2d')!;
+    canvas.width = canvas.height = canvasSize * VR_PANEL_PIXEL_RATIO;
+    ctx.setTransform(VR_PANEL_PIXEL_RATIO, 0, 0, VR_PANEL_PIXEL_RATIO, 0, 0);
+    return ctx;
+}
+
 export function createVRConfigPanel(grip: THREE.XRTargetRaySpace, canvasSize = 256): VRConfigPanel {
     const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = canvasSize;
+    canvas.width = canvas.height = canvasSize * VR_PANEL_PIXEL_RATIO;
 
     const texture = new THREE.CanvasTexture(canvas);
     const mesh = new THREE.Mesh(
@@ -331,13 +371,15 @@ export function renderConfigPanel(
     else renderFloorsPanel(state, map, canvas, canvasSize);
 }
 
+const CATEGORY_ROW_H = 20;
+const PARAM_ROW_H = 22;
+
 /**
- * Draw the config-tuning panel: one row per param, selection highlighted,
- * status line at the bottom (rebuilding / dirty / up to date)
+ * Draw the config-tuning panel: category headers with the params of the open one, scrolled to keep
+ * the selection in view, key hints + status line at the bottom (rebuilding / dirty / up to date)
  */
 function renderConfigParamsPanel(state: EditModeState, canvas: HTMLCanvasElement, canvasSize: number): void {
-    const ctx = canvas.getContext('2d')!;
-    canvas.width = canvas.height = canvasSize;
+    const ctx = prepareCanvas(canvas, canvasSize);
 
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
@@ -347,33 +389,79 @@ function renderConfigParamsPanel(state: EditModeState, canvas: HTMLCanvasElement
     ctx.textAlign = 'center';
     ctx.fillText('EDIT MODE — Config', canvasSize / 2, 20);
 
-    const rowH = 42;
-    const startY = 42;
+    // List viewport, between the title and the key hints
+    const listTop = 30;
+    const listBottom = canvasSize - 62;
+    const viewH = listBottom - listTop;
 
-    EDITABLE_PARAMS.forEach((param, idx) => {
-        const y = startY + idx * rowH;
-        const isSelected = idx === state.selectedIdx;
+    const rows = getConfigRows(state);
+    const selected = Math.min(state.selectedRow, rows.length - 1);
+    const heights = rows.map(row => row.kind === 'category' ? CATEGORY_ROW_H : PARAM_ROW_H);
+    const tops: number[] = [];
+    let contentH = 0;
+    for (const h of heights) { tops.push(contentH); contentH += h; }
+
+    // Keep the selected row centered when the list is taller than the viewport
+    const scroll = Math.max(0, Math.min(contentH - viewH, tops[selected] + heights[selected] / 2 - viewH / 2));
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, listTop, canvasSize, viewH);
+    ctx.clip();
+
+    rows.forEach((row, idx) => {
+        const y = listTop + tops[idx] - scroll;
+        const h = heights[idx];
+        if (y + h < listTop || y > listBottom) return;
+        const isSelected = idx === selected;
 
         if (isSelected) {
             ctx.fillStyle = 'rgba(255,200,60,0.2)';
-            ctx.fillRect(8, y - 4, canvasSize - 16, rowH - 8);
+            ctx.fillRect(6, y + 1, canvasSize - 12, h - 2);
         }
 
+        if (row.kind === 'category') {
+            const open = state.openCategory === row.category;
+            ctx.fillStyle = isSelected ? '#ffc83c' : '#ffee44';
+            ctx.font = 'bold 12px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(`${open ? '▾' : '▸'} ${row.label}`, 10, y + 14);
+            ctx.fillStyle = '#888';
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'right';
+            ctx.fillText(`${row.count}`, canvasSize - 12, y + 14);
+            return;
+        }
+
+        const { param } = row;
+        const value = state.config[param.key];
         ctx.fillStyle = isSelected ? '#ffc83c' : '#ccc';
         ctx.font = `${isSelected ? 'bold ' : ''}11px monospace`;
         ctx.textAlign = 'left';
-        ctx.fillText(param.label, 14, y + 12);
-
-        ctx.font = `${isSelected ? 'bold ' : ''}15px monospace`;
+        ctx.fillText(param.label, 20, y + 13);
+        ctx.font = `${isSelected ? 'bold ' : ''}12px monospace`;
         ctx.textAlign = 'right';
-        ctx.fillText(state.config[param.key].toFixed(2), canvasSize - 14, y + 12);
-    });
+        ctx.fillText(value.toFixed(2), canvasSize - 12, y + 13);
 
-    ctx.textAlign = 'center';
-    ctx.font = '9px monospace';
+        // Position of the value within its range
+        const t = (value - param.min) / (param.max - param.min);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(20, y + 17, canvasSize - 32, 2);
+        ctx.fillStyle = isSelected ? '#ffc83c' : '#777';
+        ctx.fillRect(20, y + 17, (canvasSize - 32) * t, 2);
+    });
+    ctx.restore();
+
+    // More rows above / below
     ctx.fillStyle = '#888';
-    ctx.fillText('droite: stick ↕ sélection · trigger+↔ ajuste', canvasSize / 2, canvasSize - 48);
-    ctx.fillText('gauche: stick-clic étages · X save · Y défauts', canvasSize / 2, canvasSize - 38);
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'center';
+    if (scroll > 0) ctx.fillText('▲', canvasSize / 2, listTop + 7);
+    if (scroll < contentH - viewH) ctx.fillText('▼', canvasSize / 2, listBottom - 1);
+
+    ctx.fillText('droite: ↕ sélection · clic stick ouvre/ferme', canvasSize / 2, canvasSize - 48);
+    ctx.fillText('trigger+↔ ajuste · B rebuild', canvasSize / 2, canvasSize - 38);
+    ctx.fillText('gauche: clic stick étages · X save · Y défauts', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty ? '#ff8844' : '#55ff88';
@@ -385,8 +473,7 @@ function renderConfigParamsPanel(state: EditModeState, canvas: HTMLCanvasElement
 
 // Draw the floor-repositioning panel: floor list with the active one highlighted, axis + delta info
 function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCanvasElement, canvasSize: number): void {
-    const ctx = canvas.getContext('2d')!;
-    canvas.width = canvas.height = canvasSize;
+    const ctx = prepareCanvas(canvas, canvasSize);
 
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
