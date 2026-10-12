@@ -12,6 +12,9 @@ const CONNECTOR_COLOR = 0xffaa00;
 const CONNECTOR_BRIDGED_COLOR = 0xe6d23c;
 const CONNECTOR_UNRESOLVED_COLOR = 0x888888;
 const CONNECTOR_OPACITY = 0.6;
+const START_CELL_COLOR = 0x22ff66;
+const ARRIVAL_CELL_COLOR = 0xff3355;
+const END_CELL_OPACITY = 0.95;
 
 /**
  * @typedef DebugFloorOverlay
@@ -22,6 +25,8 @@ const CONNECTOR_OPACITY = 0.6;
 export interface DebugFloorOverlay {
     group: THREE.Group;
     toggle: () => void;
+    /** Show only the stairs and their start / arrival cells (drawn over the model), or everything */
+    setStairsOnly: (on: boolean) => void;
     dispose: () => void;
 }
 
@@ -32,6 +37,14 @@ export function createDebugFloorOverlay(
     const group = new THREE.Group();
     group.name = 'debug-floor-overlay';
 
+    // Floors, walls, sub-levels... on one side, the stairs on the other: the stairs alone can be shown
+    const floorsGroup = new THREE.Group();
+    floorsGroup.name = 'debug-floors';
+    const stairsGroup = new THREE.Group();
+    stairsGroup.name = 'debug-stairs';
+    group.add(floorsGroup, stairsGroup);
+    const stairMaterials: THREE.Material[] = [];
+
     const disposables: Array<THREE.BufferGeometry | THREE.Material | THREE.Texture> = [];
 
     map.levels.forEach((level, idx) => {
@@ -40,14 +53,14 @@ export function createDebugFloorOverlay(
         // Main walkable grid (colored per room when segmentation is available)
         const mainMesh = buildWalkableMesh(map, level.walkable, level.floorY + Y_LIFT, color, FLOOR_OPACITY, level.roomIds);
         mainMesh.name = `floor-${level.id}-main`;
-        group.add(mainMesh);
+        floorsGroup.add(mainMesh);
         disposables.push(mainMesh.geometry, mainMesh.material as THREE.Material);
 
         // Wall mesh
         if (level.walls && level.walls.length > 0) {
             const wallMesh = buildWallMesh(map, level.walkable, level.walls, level.floorY + Y_LIFT, color, WALL_OPACITY);
             wallMesh.name = `floor-${level.id}-walls`;
-            group.add(wallMesh);
+            floorsGroup.add(wallMesh);
             disposables.push(wallMesh.geometry, wallMesh.material as THREE.Material);
         }
 
@@ -55,18 +68,18 @@ export function createDebugFloorOverlay(
         level.subLevels.forEach((sub, si) => {
             const subMesh = buildWalkableMesh(map, sub.walkable, sub.absoluteY + Y_LIFT, color, SUBLEVEL_OPACITY);
             subMesh.name = `floor-${level.id}-sub-${si}`;
-            group.add(subMesh);
+            floorsGroup.add(subMesh);
             disposables.push(subMesh.geometry, subMesh.material as THREE.Material);
         });
 
         // Box wireframe (bounds + ceiling height)
         const wire = buildBoundsWireframe(level, color);
-        group.add(wire);
+        floorsGroup.add(wire);
         disposables.push(wire.geometry, wire.material as THREE.Material);
 
         // Floating label above the spawn point
         const { sprite, canvasTexture, spriteMat } = buildFloorLabel(level, color);
-        group.add(sprite);
+        floorsGroup.add(sprite);
         disposables.push(canvasTexture, spriteMat);
     });
 
@@ -76,11 +89,26 @@ export function createDebugFloorOverlay(
         const color = !conn.resolved ? CONNECTOR_UNRESOLVED_COLOR : conn.bridged ? CONNECTOR_BRIDGED_COLOR : CONNECTOR_COLOR;
         const connMesh = buildConnectorMesh(map, conn.cells, color, CONNECTOR_OPACITY);
         connMesh.name = `connector-${idx}`;
-        group.add(connMesh);
+        stairsGroup.add(connMesh);
         disposables.push(connMesh.geometry, connMesh.material as THREE.Material);
+        stairMaterials.push(connMesh.material as THREE.Material);
+
+        // Start (green) and arrival (red) cells of the stair
+        for (const [cells, cellColor, label] of [
+            [conn.entryCells, START_CELL_COLOR, 'start'],
+            [conn.exitCells, ARRIVAL_CELL_COLOR, 'arrival'],
+        ] as const) {
+            if (!cells || cells.length === 0) continue;
+            const marker = buildCellMarkers(map, cells, cellColor, END_CELL_OPACITY);
+            marker.name = `connector-${idx}-${label}`;
+            marker.renderOrder = 2;
+            stairsGroup.add(marker);
+            disposables.push(marker.geometry, marker.material as THREE.Material);
+            stairMaterials.push(marker.material as THREE.Material);
+        }
 
         const { sprite, canvasTexture, spriteMat } = buildConnectorLabel(map, conn);
-        group.add(sprite);
+        stairsGroup.add(sprite);
         disposables.push(canvasTexture, spriteMat);
     });
 
@@ -89,6 +117,15 @@ export function createDebugFloorOverlay(
     return {
         group,
         toggle: () => { group.visible = !group.visible; },
+        setStairsOnly: on => {
+            floorsGroup.visible = !on;
+            // Alone, the stairs are drawn over the model
+            for (const mat of stairMaterials) {
+                mat.depthTest = !on;
+                mat.needsUpdate = true;
+            }
+            stairsGroup.renderOrder = on ? 1 : 0;
+        },
         dispose: () => {
             disposables.forEach(d => d.dispose());
             scene.remove(group);
@@ -253,6 +290,43 @@ export function buildWalkableMesh(
     const mat = new THREE.MeshBasicMaterial({
         color: useRooms ? 0xffffff : color,
         vertexColors: useRooms,
+        transparent: true,
+        opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+    });
+    return new THREE.Mesh(geo, mat);
+}
+
+/**
+ * One flat square per cell, at the cell's own Y, a little above the connector surface
+ */
+function buildCellMarkers(
+    map: SceneMap,
+    cells: { r: number; c: number; y: number }[],
+    color: number,
+    opacity: number,
+): THREE.Mesh {
+    const gs = map.gridSize;
+    const { sceneMinX, sceneMinZ } = map.sceneBounds;
+    const lift = Y_LIFT * 2;
+
+    const positions: number[] = [];
+    const indices: number[] = [];
+    for (const { r, c, y } of cells) {
+        const x0 = sceneMinX + c * gs, x1 = x0 + gs;
+        const z0 = sceneMinZ + r * gs, z1 = z0 + gs;
+        const base = positions.length / 3;
+        positions.push(x0, y + lift, z0, x1, y + lift, z0, x1, y + lift, z1, x0, y + lift, z1);
+        indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setIndex(indices);
+
+    const mat = new THREE.MeshBasicMaterial({
+        color,
         transparent: true,
         opacity,
         side: THREE.DoubleSide,

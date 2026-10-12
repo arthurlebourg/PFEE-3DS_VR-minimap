@@ -77,6 +77,8 @@ export interface FloorLevel {
  * @prop cells grid cells covered by the connector (for slope-following render)
  * @prop entryY lowest hit Y
  * @prop exitY highest hit Y
+ * @prop entryCells cells the stair starts from (the floor's edge cells the climb departed from)
+ * @prop exitCells cells the stair arrives on (first cells of the floor above's band)
  */
 export interface StairConnector {
     fromFloorId: number;
@@ -86,6 +88,8 @@ export interface StairConnector {
     cells: { r: number; c: number; y: number }[];
     entryY: number;
     exitY: number;
+    entryCells?: { r: number; c: number; y: number }[];
+    exitCells?: { r: number; c: number; y: number }[];
 }
 
 /**
@@ -127,7 +131,8 @@ export interface SceneMap {
  * @prop wallRayLength Maximum length of horizontal rays for wall detection
  * @prop minStairArea Minimal area (m²) for a climbed group of cells to be considered a stair connector
  * @prop maxStairArea Maximal area (m²) above which a group is treated as a mezzanine, not a staircase
- * @prop stairMaxStepRise Max Y rise (m) accepted between two adjacent cells while climbing from a floor's edge
+ * @prop maxSlopeDeg Steepest slope (degrees) climbed from a floor's edge: two adjacent cells accepted up to
+ *                   gridSize * tan(maxSlopeDeg) of height difference, so the limit follows the grid size.
  * @prop stairFlatTolerance Max |ΔY| (m) between adjacent cells still considered "flat" (landings, raycast noise)
  * @prop maxLandingRun Max consecutive flat cells (m, converted to a cell count) allowed before a plateau is treated as a dead end
  * @prop doorWidth Openings narrower than this separate two rooms (room segmentation)
@@ -150,7 +155,7 @@ export interface MinimapConfig {
     wallRayLength: number;
     minStairArea: number;
     maxStairArea: number;
-    stairMaxStepRise: number;
+    maxSlopeDeg: number;
     stairFlatTolerance: number;
     maxLandingRun: number;
     doorWidth: number;

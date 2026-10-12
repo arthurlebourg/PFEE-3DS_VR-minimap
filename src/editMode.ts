@@ -44,7 +44,7 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'wallRayLength', category: 'walls', label: 'Wall ray length', min: 0.05, max: 1.0, step: 0.05 },
     { key: 'minStairArea', category: 'stairs', label: 'Min stair area', min: 0.05, max: 5, step: 0.05 },
     { key: 'maxStairArea', category: 'stairs', label: 'Max stair area', min: 1, max: 30, step: 0.5 },
-    { key: 'stairMaxStepRise', category: 'stairs', label: 'Stair max step rise', min: 0.02, max: 0.5, step: 0.01 },
+    { key: 'maxSlopeDeg', category: 'stairs', label: 'Stair max slope (°)', min: 20, max: 85, step: 1 },
     { key: 'stairFlatTolerance', category: 'stairs', label: 'Stair flat tolerance', min: 0, max: 0.2, step: 0.01 },
     { key: 'maxLandingRun', category: 'stairs', label: 'Max landing run', min: 0.2, max: 5, step: 0.1 },
     { key: 'doorWidth', category: 'rooms', label: 'Door width', min: 0.4, max: 3.0, step: 0.05 },

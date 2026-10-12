@@ -233,7 +233,7 @@ export function segmentRooms(
             for (const i of cells) label[i] = NO_ROOM;
             continue;
         }
-        frontier.push(...cells);
+        for (const i of cells) frontier.push(i); // not push(...cells): a big room overflows the call stack
         nextLabel++;
     }
 

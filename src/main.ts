@@ -43,23 +43,23 @@ dirLight.position.set(3, 10, 10);
 scene.add(dirLight);
 
 const defaultConfig: MinimapConfig = {
-    gridSize: 0.5,
+    gridSize: 0.1,
     minWalkableArea: 1.0,
     normalThreshold: 0.7,
-    voxYThr: 0.35,
+    voxYThr: 0.15,
     minFloorGap: 0.4,
     histoHeightSize: 0.15,
     minPeakArea: 2,
-    floorOpeningRadius: 2, // cells, opening by reconstruction: areas with nothing wider than this disk are noise and removed (0 = off)
+    floorOpeningRadius: 5, // cells, opening by reconstruction: areas with nothing wider than this disk are noise and removed (0 = off)
     // Wall detection
     wallScanHeight: 1.0, // metres above floorY where horizontal rays are fired
     wallNormalThreshold: 0.3, // |normal.y| < this => wall (0 = perfectly vertical only)
-    wallRayLength: 0.25, // max ray length (≈ gridSize * 1.25)
+    wallRayLength: 0.125, // max ray length (≈ gridSize * 1.25)
     // Ground variation connectors
     minStairArea: 0.15, // m², filters out single-cell raycast noise
-    maxStairArea: 10, // m², > treat as sub-level, not staircase
-    stairMaxStepRise: 0.4, // m, max Y rise accepted per grid cell while climbing
-    stairFlatTolerance: 0.03, // m, |deltaY| under this still counts as a flat step
+    maxStairArea: 30, // m², > treat as sub-level, not staircase. Also holds the flat floor around the seed (see maxLandingRun)
+    maxSlopeDeg: 60, // °, steepest slope a stair flood climbs: max Y rise per cell = gridSize * tan(maxSlopeDeg)
+    stairFlatTolerance: 0.03, // m, |deltaY| under this still counts as a flat step (keep it well under the max rise per cell)
     maxLandingRun: 1.2, // m, max consecutive flat run before considering that's a dead end
     // Room segmentation
     doorWidth: 1.0, // openings narrower than this (m) split two rooms
@@ -115,6 +115,8 @@ let buildError: string | null = null;
 const loadingBar = createLoadingBar();
 
 let debugOverlayVisible = true;
+// 'g': only the stairs and their start / arrival cells
+let debugStairsOnly = false;
 let debugOverlay: DebugFloorOverlay | null = sceneMap ? createDebugFloorOverlay(scene, sceneMap) : null;
 
 // Floor state
@@ -150,6 +152,7 @@ function recreateDebugOverlay(): void {
     debugOverlay?.dispose();
     debugOverlay = sceneMap ? createDebugFloorOverlay(scene, sceneMap) : null;
     if (debugOverlay && !debugOverlayVisible) debugOverlay.toggle();
+    debugOverlay?.setStairsOnly(debugStairsOnly);
 }
 
 // Background build: pauses often in VR so the headset keeps its framerate, less on desktop for a faster build
@@ -540,6 +543,15 @@ window.addEventListener('keydown', e => {
     if (e.key === 'h' || e.key === 'H') {
         debugOverlayVisible = !debugOverlayVisible;
         debugOverlay?.toggle();
+    }
+    if (e.key === 'g' || e.key === 'G') {
+        debugStairsOnly = !debugStairsOnly;
+        // asked while the overlay is hidden: show it
+        if (debugStairsOnly && !debugOverlayVisible) {
+            debugOverlayVisible = true;
+            debugOverlay?.toggle();
+        }
+        debugOverlay?.setStairsOnly(debugStairsOnly);
     }
     if (e.key === 'l' || e.key === 'L') showRoomLabels = !showRoomLabels;
     if (e.key === 'e' || e.key === 'E') {
