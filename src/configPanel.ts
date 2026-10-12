@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { EditModeState } from './editMode.js';
 import { HUD_RENDER_ORDER } from './minimap.js';
-import { EDITABLE_PARAMS, PARAM_CATEGORIES, type ParamCategory, getConfigRows, resetToDefaults, toggleCategory } from './editMode.js';
+import { EDITABLE_PARAMS, PARAM_CATEGORIES, type ParamCategory, getConfigRows, getRebuildAction, resetToDefaults, toggleCategory } from './editMode.js';
 import {
     type MapContext,
     selectNextFloor, toggleAxisMode, nudgeVerticalStep, nudgeHorizontal, cancelPreview, hasPendingPreview,
@@ -18,7 +18,8 @@ export interface DesktopConfigPanel {
  * HTML overlay with two tabs: config sliders + Rebuild, and floor repositioning.
  * Shown/hidden by the caller toggling state.active and calling sync()
  * @param state edit mode state, mutated as the user interacts with the panel
- * @param onRebuildConfig called when the Rebuild button is clicked
+ * @param onRebuildConfig called when the Rebuild button is clicked (also while rebuilding: restarts with the edited config)
+ * @param onCancelBuild called when the Stop button is clicked, shown while rebuilding
  * @param onSaveMap called when the Save map button is clicked
  * @param onConfirmFloorMove called when the floor-move Confirm button is clicked
  * @param getMapContext returns the current floor list + grid size
@@ -26,6 +27,7 @@ export interface DesktopConfigPanel {
 export function createDesktopConfigPanel(
     state: EditModeState,
     onRebuildConfig: () => void,
+    onCancelBuild: () => void,
     onSaveMap: () => void,
     onConfirmFloorMove: () => void,
     getMapContext: () => MapContext,
@@ -141,7 +143,6 @@ export function createDesktopConfigPanel(
     }
 
     const rebuildBtn = document.createElement('button');
-    rebuildBtn.textContent = 'Rebuild minimap';
     Object.assign(rebuildBtn.style, {
         marginTop: '6px', width: '100%', padding: '6px',
         background: '#2a6', color: '#fff', border: 'none',
@@ -149,6 +150,16 @@ export function createDesktopConfigPanel(
     });
     rebuildBtn.addEventListener('click', onRebuildConfig);
     configSection.appendChild(rebuildBtn);
+
+    const cancelBuildBtn = document.createElement('button');
+    cancelBuildBtn.textContent = '■ Arrêter le calcul';
+    Object.assign(cancelBuildBtn.style, {
+        marginTop: '6px', width: '100%', padding: '6px',
+        background: '#a33', color: '#fff', border: 'none',
+        borderRadius: '4px', cursor: 'pointer', fontFamily: 'monospace',
+    });
+    cancelBuildBtn.addEventListener('click', onCancelBuild);
+    configSection.appendChild(cancelBuildBtn);
 
     const resetBtn = document.createElement('button');
     resetBtn.textContent = '↺ Défauts';
@@ -163,6 +174,13 @@ export function createDesktopConfigPanel(
     const configStatus = document.createElement('div');
     Object.assign(configStatus.style, { marginTop: '6px', color: '#888' });
     configSection.appendChild(configStatus);
+
+    const buildTrack = document.createElement('div');
+    Object.assign(buildTrack.style, { height: '4px', marginTop: '4px', borderRadius: '2px', background: '#333', overflow: 'hidden' });
+    const buildFill = document.createElement('div');
+    Object.assign(buildFill.style, { height: '100%', width: '0%', background: '#88aaff' });
+    buildTrack.appendChild(buildFill);
+    configSection.appendChild(buildTrack);
 
     // Floors section
     const floorsSection = document.createElement('div');
@@ -294,15 +312,33 @@ export function createDesktopConfigPanel(
             inputs[param.key]!.value = String(state.config[param.key]);
             valueLabels[param.key]!.textContent = state.config[param.key].toFixed(2);
         }
-        configStatus.textContent = state.isRebuilding
-            ? 'Reconstruction…'
-            : state.isDirty ? 'Modifié — pense à rebuild' : '';
-
         const { levels } = getMapContext();
+        const hasMap = levels.length > 0;
+        saveBtn.disabled = !hasMap;
+        saveBtn.style.opacity = saveBtn.disabled ? '0.5' : '1';
+        const action = getRebuildAction(state);
+        const percent = Math.round(state.buildProgress * 100);
+
+        rebuildBtn.textContent = action === 'build'
+            ? hasMap ? 'Rebuild minimap' : 'Calculer la carte'
+            : '↻ Relancer avec ces paramètres';
+        // nothing new to apply while rebuilding with the same config
+        rebuildBtn.disabled = action === 'cancel';
+        rebuildBtn.style.opacity = rebuildBtn.disabled ? '0.5' : '1';
+        cancelBuildBtn.style.display = state.isRebuilding ? 'block' : 'none';
+        buildTrack.style.display = state.isRebuilding ? 'block' : 'none';
+        buildFill.style.width = `${percent}%`;
+
+        configStatus.textContent = state.isRebuilding
+            ? `Calcul ${percent} % — ${state.buildLabel}${state.isDirty ? ' (modifié : relance pour appliquer)' : ''}`
+            : state.isDirty ? 'Modifié — pense à rebuild'
+            : hasMap ? '' : 'Aucune carte — lance le calcul';
+        configStatus.style.color = state.isRebuilding || hasMap ? '#888' : '#ff8844';
+
         const level = levels[state.floors.selectedFloorIdx];
-        if (level) {
-            floorLabel.textContent = `Étage ${level.id} — Y=${level.floorY.toFixed(2)}m`;
-        }
+        floorLabel.textContent = level
+            ? `Étage ${level.id} — Y=${level.floorY.toFixed(2)}m`
+            : state.isRebuilding ? 'Carte en cours de calcul…' : 'Aucune carte';
 
         const vertical = state.floors.axisMode === 'vertical';
         axisBtn.textContent = vertical ? 'Axe : Vertical (Y)' : 'Axe : Horizontal (X/Z)';
@@ -367,7 +403,7 @@ export function renderConfigPanel(
     canvas: HTMLCanvasElement,
     canvasSize = 256,
 ): void {
-    if (state.panel === 'config') renderConfigParamsPanel(state, canvas, canvasSize);
+    if (state.panel === 'config') renderConfigParamsPanel(state, map, canvas, canvasSize);
     else renderFloorsPanel(state, map, canvas, canvasSize);
 }
 
@@ -378,7 +414,7 @@ const PARAM_ROW_H = 22;
  * Draw the config-tuning panel: category headers with the params of the open one, scrolled to keep
  * the selection in view, key hints + status line at the bottom (rebuilding / dirty / up to date)
  */
-function renderConfigParamsPanel(state: EditModeState, canvas: HTMLCanvasElement, canvasSize: number): void {
+function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: HTMLCanvasElement, canvasSize: number): void {
     const ctx = prepareCanvas(canvas, canvasSize);
 
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
@@ -465,11 +501,28 @@ function renderConfigParamsPanel(state: EditModeState, canvas: HTMLCanvasElement
     ctx.fillText('gauche: clic stick étages · X save · Y défauts', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
-    ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty ? '#ff8844' : '#55ff88';
-    ctx.fillText(
-        state.isRebuilding ? 'Reconstruction…' : state.isDirty ? 'bouton B : rebuild' : 'À jour',
-        canvasSize / 2, canvasSize - 12
-    );
+    ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty || map.levelCount === 0 ? '#ff8844' : '#55ff88';
+    ctx.fillText(rebuildStatusText(state, map), canvasSize / 2, canvasSize - 12);
+
+    // Progress of the running rebuild, under the status line
+    if (state.isRebuilding) {
+        ctx.fillStyle = '#333';
+        ctx.fillRect(20, canvasSize - 6, canvasSize - 40, 3);
+        ctx.fillStyle = '#ffc83c';
+        ctx.fillRect(20, canvasSize - 6, (canvasSize - 40) * state.buildProgress, 3);
+    }
+}
+
+/** Status line of the VR config panel, ending with what the B button does now */
+function rebuildStatusText(state: EditModeState, map: MapContext): string {
+    const percent = Math.round(state.buildProgress * 100);
+    switch (getRebuildAction(state)) {
+        case 'cancel': return `Calcul ${percent}% · B : arrêter`;
+        case 'restart': return `Calcul ${percent}% · B : relancer`;
+        case 'build':
+            if (map.levelCount === 0) return 'Aucune carte · B : calculer';
+            return state.isDirty ? 'bouton B : rebuild' : 'À jour';
+    }
 }
 
 // Draw the floor-repositioning panel: floor list with the active one highlighted, axis + delta info
@@ -486,6 +539,17 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
 
     const rowH = 22;
     const startY = 36;
+
+    if (map.levelCount === 0) {
+        ctx.fillStyle = '#ccc';
+        ctx.font = '12px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(state.isRebuilding ? 'Carte en cours de calcul…' : 'Aucune carte', canvasSize / 2, canvasSize / 2 - 8);
+        ctx.fillStyle = '#888';
+        ctx.font = '10px monospace';
+        ctx.fillText('gauche: clic stick → config', canvasSize / 2, canvasSize / 2 + 12);
+        return;
+    }
 
     map.levels.forEach((level, idx) => {
         // floor 0 (lowest) at the bottom

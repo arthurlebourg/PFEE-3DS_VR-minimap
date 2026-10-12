@@ -77,6 +77,8 @@ export interface FloorLevel {
  * @prop cells grid cells covered by the connector (for slope-following render)
  * @prop entryY lowest hit Y
  * @prop exitY highest hit Y
+ * @prop entryCells cells the stair starts from (the floor's edge cells the climb departed from)
+ * @prop exitCells cells the stair arrives on (first cells of the floor above's band)
  */
 export interface StairConnector {
     fromFloorId: number;
@@ -86,6 +88,8 @@ export interface StairConnector {
     cells: { r: number; c: number; y: number }[];
     entryY: number;
     exitY: number;
+    entryCells?: { r: number; c: number; y: number }[];
+    exitCells?: { r: number; c: number; y: number }[];
 }
 
 /**
@@ -127,7 +131,8 @@ export interface SceneMap {
  * @prop wallRayLength Maximum length of horizontal rays for wall detection
  * @prop minStairArea Minimal area (m²) for a climbed group of cells to be considered a stair connector
  * @prop maxStairArea Maximal area (m²) above which a group is treated as a mezzanine, not a staircase
- * @prop stairMaxStepRise Max Y rise (m) accepted between two adjacent cells while climbing from a floor's edge
+ * @prop maxSlopeDeg Steepest slope (degrees) climbed from a floor's edge: two adjacent cells accepted up to
+ *                   gridSize * tan(maxSlopeDeg) of height difference, so the limit follows the grid size.
  * @prop stairFlatTolerance Max |ΔY| (m) between adjacent cells still considered "flat" (landings, raycast noise)
  * @prop maxLandingRun Max consecutive flat cells (m, converted to a cell count) allowed before a plateau is treated as a dead end
  * @prop doorWidth Openings narrower than this separate two rooms (room segmentation)
@@ -150,7 +155,7 @@ export interface MinimapConfig {
     wallRayLength: number;
     minStairArea: number;
     maxStairArea: number;
-    stairMaxStepRise: number;
+    maxSlopeDeg: number;
     stairFlatTolerance: number;
     maxLandingRun: number;
     doorWidth: number;
@@ -165,10 +170,11 @@ const InfToJson = (_: string, v: unknown) => (v === Infinity ? '__INF__' : v);
 const JsonToInf = (_: string, v: unknown) => (v === '__INF__' ? Infinity : v);
 
 /**
- * Save a SceneMap in a json
+ * Save a SceneMap in a json, named after the model so it's easy to tell which model a map belongs to
  * @param map SceneMap object
+ * @param modelFile file name of the model the map was built from
  */
-export function saveSceneMapAsFile(map: SceneMap): void {
+export function saveSceneMapAsFile(map: SceneMap, modelFile: string): void {
     map.version = CACHE_VERSION;
     const json = JSON.stringify(map, InfToJson, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -176,7 +182,7 @@ export function saveSceneMapAsFile(map: SceneMap): void {
 
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sceneMap.json`;
+    a.download = `${modelFile.replace(/\.glb$/i, '')}_sceneMap.json`;
     a.click();
 
     URL.revokeObjectURL(url);
@@ -580,6 +586,58 @@ function drawLegend(ctx: CanvasRenderingContext2D, canvasSize: number): void {
         ctx.fillText(label, x + SWATCH + 4, y + SWATCH / 2 + 1);
     });
     ctx.textBaseline = 'alphabetic';
+}
+
+/**
+ * @typedef MinimapStatus shown on the minimap while there's no map to draw
+ * @prop title main line
+ * @prop detail secondary line (current build step, error...)
+ * @prop progress build progress in [0, 1], null = no progress bar
+ * @prop hints controller hints, one per line
+ */
+export interface MinimapStatus {
+    title: string;
+    detail: string;
+    progress: number | null;
+    hints: string[];
+}
+
+/**
+ * Render a status screen in place of the minimap (map being built, no map...)
+ */
+export function renderMinimapStatus(status: MinimapStatus, canvas: HTMLCanvasElement, canvasSize = 256): void {
+    const ctx = canvas.getContext('2d')!;
+    canvas.width = canvas.height = canvasSize * MINIMAP_PIXEL_RATIO;
+    ctx.setTransform(MINIMAP_PIXEL_RATIO, 0, 0, MINIMAP_PIXEL_RATIO, 0, 0);
+
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvasSize, canvasSize);
+
+    const mid = canvasSize / 2;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffee44';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText(status.title, mid, 80);
+
+    ctx.fillStyle = '#ccc';
+    ctx.font = '11px monospace';
+    ctx.fillText(status.detail, mid, 104, canvasSize - 24);
+
+    if (status.progress !== null) {
+        const p = Math.min(Math.max(status.progress, 0), 1);
+        const barW = canvasSize - 48;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(24, 120, barW, 8);
+        ctx.fillStyle = '#88aaff';
+        ctx.fillRect(24, 120, barW * p, 8);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px monospace';
+        ctx.fillText(`${Math.round(p * 100)} %`, mid, 148);
+    }
+
+    ctx.fillStyle = '#888';
+    ctx.font = '10px monospace';
+    status.hints.forEach((hint, i) => ctx.fillText(hint, mid, canvasSize - 16 - (status.hints.length - 1 - i) * 14));
 }
 
 // VR Minimap
