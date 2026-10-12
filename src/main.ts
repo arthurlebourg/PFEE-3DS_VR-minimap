@@ -426,6 +426,23 @@ function getVRJoystick(): { x: number; y: number } {
     return { x: 0, y: 0 };
 }
 
+// left Y / X buttons move the player up / down in absolute terms, not between floors.
+// Disabled in edit mode, where those buttons save / reset
+const DEBUG_VERTICAL_SPEED = 0.03;
+function getDebugVertical(): number {
+    if (editMode.active) return 0;
+    const session = renderer.xr.getSession();
+    if (!session) return 0;
+
+    for (const source of session.inputSources) {
+        if (source.handedness !== 'left' || !source.gamepad) continue;
+        const up = source.gamepad.buttons[5]?.pressed ?? false; // Y
+        const down = source.gamepad.buttons[4]?.pressed ?? false; // X
+        return (up ? 1 : 0) - (down ? 1 : 0);
+    }
+    return 0;
+}
+
 // Room / corridor ids on the minimap, toggled with L
 let showRoomLabels = true;
 
@@ -458,6 +475,12 @@ renderer.setAnimationLoop(() => {
         const joystick = getVRJoystick();
         if (joystick.x !== 0 || joystick.y !== 0) spawnIsProvisional = false;
         updateMovement(player, camera, joystick);
+    }
+
+    const debugVertical = getDebugVertical();
+    if (debugVertical !== 0) {
+        spawnIsProvisional = false;
+        player.position.y += debugVertical * DEBUG_VERTICAL_SPEED;
     }
 
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
