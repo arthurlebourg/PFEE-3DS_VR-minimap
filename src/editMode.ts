@@ -30,7 +30,7 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'wallRayLength', label: 'Wall ray length', min: 0.05, max: 1.0, step: 0.05 },
 ];
 
-export type EditPanel = 'config' | 'floors';
+export type EditPanel = 'config' | 'floors' | 'minimap3d';
 
 /**
  * @typedef EditModeState

@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 
 import type { SceneMap } from './minimap.js';
-import { teleportTo } from './xrMove.ts';
 
 // trigger value in [0,1]
 const TRIGGER_THRESHOLD = 0.5;
@@ -30,6 +29,13 @@ export function createFloorManager(initialIdx = 0): FloorManagerState {
         dir: 0,
         isCoolingDown: false,
     };
+}
+
+/**
+ * Returns the currently targeted floor index (preview floor while trigger is held, or confirmed current floor)
+ */
+export function getActiveFloorIdx(state: FloorManagerState): number {
+    return state.triggerHeld ? state.prevFloorIdx : state.curFloorIdx;
 }
 
 export function updateFloorManager(

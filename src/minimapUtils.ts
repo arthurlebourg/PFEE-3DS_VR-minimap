@@ -13,7 +13,7 @@ export function buildWalkableGrid(
     allHits: { r: number; c: number; y: number }[],
     targetY: number,
     thr: number,
-    minCells : number,
+    _minCells: number,
     rows: number,
     cols: number,
 ): { walkable: boolean[][]; bestComponent: [number, number][] } {

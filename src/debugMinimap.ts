@@ -64,6 +64,7 @@ export function createDebugFloorOverlay(
         group.add(sprite);
         disposables.push(canvasTexture, spriteMat);
     });
+    group.visible = false;
     scene.add(group);
 
     return {

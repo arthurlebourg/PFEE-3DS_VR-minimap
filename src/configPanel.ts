@@ -5,6 +5,7 @@ import {
     type MapContext,
     selectNextFloor, toggleAxisMode, nudgeVerticalStep, nudgeHorizontal, cancelPreview, hasPendingPreview,
 } from './floorAdjust.js';
+import type { VRMinimap3D } from './minimap3D.ts';
 
 // Desktop panel (HTML overlay)
 
@@ -14,13 +15,14 @@ export interface DesktopConfigPanel {
 }
 
 /**
- * HTML overlay with two tabs: config sliders + Rebuild, and floor repositioning.
+ * HTML overlay with three tabs: config sliders, floor repositioning, and 3D minimap tuning.
  * Shown/hidden by the caller toggling state.active and calling sync()
  * @param state edit mode state, mutated as the user interacts with the panel
  * @param onRebuildConfig called when the Rebuild button is clicked
  * @param onSaveMap called when the Save map button is clicked
  * @param onConfirmFloorMove called when the floor-move Confirm button is clicked
  * @param getMapContext returns the current floor list + grid size
+ * @param getVRMinimap3D returns the live VRMinimap3D instance
  */
 export function createDesktopConfigPanel(
     state: EditModeState,
@@ -28,6 +30,7 @@ export function createDesktopConfigPanel(
     onSaveMap: () => void,
     onConfirmFloorMove: () => void,
     getMapContext: () => MapContext,
+    getVRMinimap3D?: () => VRMinimap3D | null,
 ): DesktopConfigPanel {
     const panel = document.createElement('div');
     Object.assign(panel.style, {
@@ -59,10 +62,13 @@ export function createDesktopConfigPanel(
     }
     const configTabBtn = makeTabBtn('Config');
     const floorsTabBtn = makeTabBtn('Étages');
+    const minimapTabBtn = makeTabBtn('Minimap 3D');
     configTabBtn.addEventListener('click', () => { state.panel = 'config'; sync(); });
     floorsTabBtn.addEventListener('click', () => { state.panel = 'floors'; sync(); });
+    minimapTabBtn.addEventListener('click', () => { state.panel = 'minimap3d'; sync(); });
     tabsRow.appendChild(configTabBtn);
     tabsRow.appendChild(floorsTabBtn);
+    tabsRow.appendChild(minimapTabBtn);
     panel.appendChild(tabsRow);
 
     // Save is global — available from either tab
@@ -249,6 +255,162 @@ export function createDesktopConfigPanel(
     floorActionsRow.appendChild(cancelBtn);
     floorsSection.appendChild(floorActionsRow);
 
+    // Minimap 3D section
+    const minimapSection = document.createElement('div');
+    minimapSection.style.display = 'none';
+    panel.appendChild(minimapSection);
+
+    const mmTitle = document.createElement('div');
+    mmTitle.textContent = 'Minimap 3D — Réglages en direct';
+    Object.assign(mmTitle.style, { marginBottom: '8px', color: '#00f0ff', fontWeight: 'bold' });
+    minimapSection.appendChild(mmTitle);
+
+    function createMinimapSlider(
+        label: string, min: number, max: number, step: number, defaultVal: number,
+        unit: string, onChange: (val: number) => void
+    ) {
+        const row = document.createElement('div');
+        row.style.marginBottom = '6px';
+        const lbl = document.createElement('label');
+        Object.assign(lbl.style, { display: 'flex', justifyContent: 'space-between' });
+        lbl.textContent = label;
+        const valSpan = document.createElement('span');
+        valSpan.textContent = `${defaultVal.toFixed(step < 0.01 ? 3 : 2)}${unit}`;
+        lbl.appendChild(valSpan);
+        row.appendChild(lbl);
+
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = String(min);
+        input.max = String(max);
+        input.step = String(step);
+        input.value = String(defaultVal);
+        input.style.width = '100%';
+        input.addEventListener('input', () => {
+            const v = parseFloat(input.value);
+            valSpan.textContent = `${v.toFixed(step < 0.01 ? 3 : 2)}${unit}`;
+            onChange(v);
+        });
+        row.appendChild(input);
+        minimapSection.appendChild(row);
+
+        return {
+            setVal: (v: number) => {
+                input.value = String(v);
+                valSpan.textContent = `${v.toFixed(step < 0.01 ? 3 : 2)}${unit}`;
+            }
+        };
+    }
+
+    let liveOffsetX = -0.22;
+    let liveOffsetY = -0.18;
+    let liveOffsetZ = -0.55;
+    let livePitch = 55;
+    let liveYaw = 20;
+    let liveSize = 0.14;
+
+    const sliderX = createMinimapSlider('Position X (Gauche / Droite)', -0.60, 0.60, 0.01, liveOffsetX, 'm', (v) => {
+        liveOffsetX = v;
+        const mm = getVRMinimap3D?.();
+        if (mm) mm.setWristOffset(liveOffsetX, liveOffsetY, liveOffsetZ);
+    });
+
+    const sliderY = createMinimapSlider('Position Y (Hauteur)', -0.50, 0.30, 0.01, liveOffsetY, 'm', (v) => {
+        liveOffsetY = v;
+        const mm = getVRMinimap3D?.();
+        if (mm) mm.setWristOffset(liveOffsetX, liveOffsetY, liveOffsetZ);
+    });
+
+    const sliderZ = createMinimapSlider('Position Z (Distance)', -1.00, -0.20, 0.01, liveOffsetZ, 'm', (v) => {
+        liveOffsetZ = v;
+        const mm = getVRMinimap3D?.();
+        if (mm) mm.setWristOffset(liveOffsetX, liveOffsetY, liveOffsetZ);
+    });
+
+    const sliderPitch = createMinimapSlider('Inclinaison Haut/Bas (Pitch)', 0, 90, 1, livePitch, '°', (v) => {
+        livePitch = v;
+        const mm = getVRMinimap3D?.();
+        if (mm) mm.setWristTilt(livePitch, liveYaw);
+    });
+
+    const sliderYaw = createMinimapSlider('Orientation Gauche/Droite (Yaw)', -60, 60, 1, liveYaw, '°', (v) => {
+        liveYaw = v;
+        const mm = getVRMinimap3D?.();
+        if (mm) mm.setWristTilt(livePitch, liveYaw);
+    });
+
+    createMinimapSlider('Taille maquette', 0.08, 0.30, 0.01, liveSize, 'm', (v) => {
+        liveSize = v;
+        const mm = getVRMinimap3D?.();
+        if (mm) mm.setTargetSize(liveSize);
+    });
+
+    // Current floor indicator badge
+    const floorInfoBadge = document.createElement('div');
+    floorInfoBadge.textContent = '🎯 Affichage : Étage actif uniquement';
+    Object.assign(floorInfoBadge.style, {
+        width: '100%', padding: '6px 8px', marginTop: '8px', marginBottom: '8px',
+        background: '#0d2235', color: '#00f0ff', border: '1px solid #164060',
+        borderRadius: '4px', fontFamily: 'monospace', textAlign: 'center', fontSize: '11px',
+    });
+    minimapSection.appendChild(floorInfoBadge);
+
+    // Preset buttons row
+    const presetLabel = document.createElement('div');
+    presetLabel.textContent = 'Positions pré-réglées :';
+    Object.assign(presetLabel.style, { color: '#888', marginBottom: '4px', marginTop: '4px' });
+    minimapSection.appendChild(presetLabel);
+
+    const presetsRow = document.createElement('div');
+    Object.assign(presetsRow.style, { display: 'flex', gap: '4px', marginBottom: '8px' });
+
+    function applyPreset(x: number, y: number, z: number, pitch: number, yaw: number) {
+        liveOffsetX = x; liveOffsetY = y; liveOffsetZ = z; livePitch = pitch; liveYaw = yaw;
+        sliderX.setVal(x);
+        sliderY.setVal(y);
+        sliderZ.setVal(z);
+        sliderPitch.setVal(pitch);
+        sliderYaw.setVal(yaw);
+        const mm = getVRMinimap3D?.();
+        if (mm) {
+            mm.setWristOffset(x, y, z);
+            mm.setWristTilt(pitch, yaw);
+        }
+    }
+
+    const presetBottomLeft = makeSmallBtn('Bas-Gauche');
+    presetBottomLeft.title = 'Vue HUD 3/4 plongeante en bas à gauche (défaut)';
+    presetBottomLeft.addEventListener('click', () => applyPreset(-0.22, -0.18, -0.55, 55, 20));
+    presetsRow.appendChild(presetBottomLeft);
+
+    const presetBottomCenter = makeSmallBtn('Bas-Centre');
+    presetBottomCenter.title = 'Vue HUD centrée sous le regard';
+    presetBottomCenter.addEventListener('click', () => applyPreset(0.00, -0.20, -0.50, 60, 0));
+    presetsRow.appendChild(presetBottomCenter);
+
+    const presetTopDown = makeSmallBtn('Plongeante');
+    presetTopDown.title = 'Vue quasi verticale 2D/3D (80° de pitch)';
+    presetTopDown.addEventListener('click', () => applyPreset(-0.22, -0.18, -0.55, 80, 20));
+    presetsRow.appendChild(presetTopDown);
+
+    minimapSection.appendChild(presetsRow);
+
+    // Copy coords button
+    const copyCoordsBtn = document.createElement('button');
+    copyCoordsBtn.textContent = '📋 Copier coordonnées';
+    Object.assign(copyCoordsBtn.style, {
+        width: '100%', padding: '6px', background: '#222', color: '#00f0ff',
+        border: '1px solid #00f0ff', borderRadius: '4px', cursor: 'pointer', fontFamily: 'monospace',
+    });
+    copyCoordsBtn.addEventListener('click', () => {
+        const text = `wristOffset: new THREE.Vector3(${liveOffsetX.toFixed(3)}, ${liveOffsetY.toFixed(3)}, ${liveOffsetZ.toFixed(3)}), wristRotation: new THREE.Euler(THREE.MathUtils.degToRad(${livePitch}), THREE.MathUtils.degToRad(${liveYaw}), 0)`;
+        navigator.clipboard?.writeText(text);
+        console.log('[Minimap 3D Config]', text);
+        copyCoordsBtn.textContent = '✓ Copié dans presse-papier !';
+        setTimeout(() => { copyCoordsBtn.textContent = '📋 Copier coordonnées'; }, 2000);
+    });
+    minimapSection.appendChild(copyCoordsBtn);
+
     document.body.appendChild(panel);
 
     function sync() {
@@ -256,8 +418,10 @@ export function createDesktopConfigPanel(
 
         configTabBtn.style.background = state.panel === 'config' ? '#2668a6' : '#333';
         floorsTabBtn.style.background = state.panel === 'floors' ? '#2668a6' : '#333';
+        minimapTabBtn.style.background = state.panel === 'minimap3d' ? '#2668a6' : '#333';
         configSection.style.display = state.panel === 'config' ? 'block' : 'none';
         floorsSection.style.display = state.panel === 'floors' ? 'block' : 'none';
+        minimapSection.style.display = state.panel === 'minimap3d' ? 'block' : 'none';
 
         for (const param of EDITABLE_PARAMS) {
             inputs[param.key]!.value = String(state.config[param.key]);

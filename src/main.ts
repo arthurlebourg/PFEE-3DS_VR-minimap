@@ -1,14 +1,14 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { loadGLB } from './glbLoader.js';
 import { createPlayer, updateMovement } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
-    renderMinimap, createVRMinimap,
-    type VRMinimap,
 } from './minimap.js';
-import { createFloorManager, updateFloorManager } from './floorManager.js';
-import { initXrMove, teleportTo } from './xrMove.ts';
+import { createFloorManager, updateFloorManager, getActiveFloorIdx } from './floorManager.js';
+import { createVRMinimap3D, type VRMinimap3D } from './minimap3D.ts';
+import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
 import { createEditMode, createEditModeInputHandler } from './editMode.js';
@@ -26,11 +26,13 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.xr.enabled = true;
 renderer.xr.cameraAutoUpdate = false;
+renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 
 // Scene
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x121722);
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
 
 const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
@@ -119,6 +121,10 @@ async function rebuildMinimap(): Promise<void> {
 
     editMode.isRebuilding = false;
     editMode.isDirty = false;
+
+    if (vrMinimap3D) {
+        vrMinimap3D.rebuild(sceneMap);
+    }
 }
 
 function saveMinimap(): void {
@@ -135,6 +141,10 @@ function confirmFloorMove(): void {
     debugOverlay.dispose();
     debugOverlay = createDebugFloorOverlay(scene, sceneMap);
     disposeFloorMoveVisual();
+
+    if (vrMinimap3D) {
+        vrMinimap3D.rebuild(sceneMap);
+    }
 }
 
 function ensureFloorMoveVisual(): void {
@@ -155,7 +165,7 @@ function ensureFloorMoveVisual(): void {
     floorMoveVisual.update(editMode.floors);
 }
 
-const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
+const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext, () => vrMinimap3D);
 const editModeInputUpdate = createEditModeInputHandler(editMode, rebuildMinimap, saveMinimap, confirmFloorMove, getMapContext);
 const desktopHistogramPanel = createDesktopHistogramPanel();
 
@@ -197,25 +207,56 @@ for (let i = 0; i < 2; i++) {
 // XR movement
 initXrMove(renderer.xr);
 
+// Desktop navigation & initial camera position
+const initialSpawn = sceneMap!.levels[0]?.spawnPoint ?? { x: 0, y: 1.6, z: 0 };
+camera.position.set(initialSpawn.x, initialSpawn.y + 2.0, initialSpawn.z + 8);
+
+const desktopControls = new OrbitControls(camera, renderer.domElement);
+desktopControls.target.set(initialSpawn.x, initialSpawn.y + 1.0, initialSpawn.z);
+desktopControls.enableDamping = true;
+desktopControls.dampingFactor = 0.05;
+
 renderer.xr.addEventListener('sessionstart', () => {
+    desktopControls.enabled = false;
     const spawn = sceneMap!.levels[0].spawnPoint;
     const EYE_HEIGHT = 1.65;
     player.position.set(spawn.x, spawn.y - EYE_HEIGHT, spawn.z);
-});
-
-// Minimap
-const leftGrip = renderer.xr.getControllerGrip(0);
-let vrMinimap: VRMinimap | null = null;
-
-renderer.xr.addEventListener('sessionstart', () => {
-    vrMinimap = createVRMinimap(leftGrip, 256);
+    camera.position.set(0, 0, 0);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
-    if (vrMinimap) {
-        leftGrip.remove(vrMinimap.mesh);
-        vrMinimap.texture.dispose();
-        vrMinimap = null;
+    desktopControls.enabled = true;
+    camera.position.set(initialSpawn.x, initialSpawn.y + 2.0, initialSpawn.z + 8);
+    desktopControls.target.set(initialSpawn.x, initialSpawn.y + 1.0, initialSpawn.z);
+});
+
+// 3D Volumetric Minimap (Floating HUD anchored in field of view - 100% free hands)
+const hudMinimapAnchor = new THREE.Group();
+hudMinimapAnchor.name = 'hud-minimap-anchor';
+camera.add(hudMinimapAnchor);
+
+let vrMinimap3D: VRMinimap3D | null = null;
+let hudMinimapVisible = true;
+
+if (sceneMap) {
+    vrMinimap3D = createVRMinimap3D(hudMinimapAnchor, sceneMap);
+}
+
+// In WebXR as well as desktop: stays comfortably anchored in camera HUD!
+// Hands remain 100% free; moving the left joystick or controller does not move the map.
+renderer.xr.addEventListener('sessionstart', () => {
+    hudMinimapAnchor.visible = hudMinimapVisible;
+    if (vrMinimap3D) {
+        vrMinimap3D.attachTo(hudMinimapAnchor);
+        vrMinimap3D.setVisible(hudMinimapVisible);
+    }
+});
+
+renderer.xr.addEventListener('sessionend', () => {
+    hudMinimapAnchor.visible = hudMinimapVisible;
+    if (vrMinimap3D) {
+        vrMinimap3D.attachTo(hudMinimapAnchor);
+        vrMinimap3D.setVisible(hudMinimapVisible);
     }
 });
 
@@ -270,15 +311,22 @@ const floorState = createFloorManager(0);
 
 // Main
 const playerDir = new THREE.Vector3();
+const playerWorldPos = new THREE.Vector3();
 const timer = new THREE.Timer();
 
 renderer.setAnimationLoop(() => {
     timer.update();
     renderer.xr.updateCamera(camera);
 
+    if (!renderer.xr.isPresenting) {
+        desktopControls.update();
+    }
+
     if (!floorState.isCoolingDown) {
         updateMovement(player, camera, getVRJoystick());
     }
+
+    updateVRMinimapToggleInput();
 
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
@@ -286,11 +334,14 @@ renderer.setAnimationLoop(() => {
         updateFloorManager(floorState, sceneMap!, renderer.xr.getSession(), player);
     }
 
-    if (vrMinimap) {
+    if (vrMinimap3D && sceneMap) {
         camera.getWorldDirection(playerDir);
-        const currentFloor = sceneMap!.levels[floorState.curFloorIdx];
-        renderMinimap(sceneMap!, currentFloor, player.position, playerDir, vrMinimap.canvas, 256, floorState);
-        vrMinimap.texture.needsUpdate = true;
+        camera.getWorldPosition(playerWorldPos);
+        const targetFloor = (editMode.active && editMode.panel === 'floors')
+            ? editMode.floors.selectedFloorIdx
+            : getActiveFloorIdx(floorState);
+        vrMinimap3D.setFloorHighlight(targetFloor, floorState.triggerHeld);
+        vrMinimap3D.update(playerWorldPos, playerDir);
     }
 
     ensureFloorMoveVisual();
@@ -326,6 +377,25 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+let lastVRMinimapBtnState = false;
+function updateVRMinimapToggleInput(): void {
+    const session = renderer.xr.getSession();
+    if (!session) return;
+    for (const source of session.inputSources) {
+        if (source.handedness !== 'left') continue;
+        const gp = source.gamepad;
+        if (!gp) continue;
+        // Button 5 is 'Y' on Meta Quest left controller, button 4 is 'X'
+        const pressed = Boolean(gp.buttons[5]?.pressed || gp.buttons[4]?.pressed);
+        if (pressed && !lastVRMinimapBtnState) {
+            hudMinimapVisible = !hudMinimapVisible;
+            hudMinimapAnchor.visible = hudMinimapVisible;
+            if (vrMinimap3D) vrMinimap3D.setVisible(hudMinimapVisible);
+        }
+        lastVRMinimapBtnState = pressed;
+    }
+}
+
 // Display debug overlay
 window.addEventListener('keydown', e => {
     if (e.key === 'h' || e.key === 'H') debugOverlay.toggle();
@@ -334,4 +404,11 @@ window.addEventListener('keydown', e => {
         desktopConfigPanel.sync();
     }
     if ((e.key === 'r' || e.key === 'R') && editMode.active) rebuildMinimap();
+    if (e.key === 'm' || e.key === 'M') {
+        hudMinimapVisible = !hudMinimapVisible;
+        hudMinimapAnchor.visible = hudMinimapVisible;
+        if (vrMinimap3D) {
+            vrMinimap3D.setVisible(hudMinimapVisible);
+        }
+    }
 });
