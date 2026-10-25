@@ -70,7 +70,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 /**
  * Build BVH on meshes in scene (once)
  */
-function ensureBoundsTrees(scene: THREE.Object3D): void {
+export function ensureBoundsTrees(scene: THREE.Object3D): void {
     scene.traverse(obj => {
         if (!(obj instanceof THREE.Mesh) || !obj.geometry) return;
         const geo = obj.geometry as THREE.BufferGeometry & { boundsTree?: unknown };
@@ -91,14 +91,14 @@ interface MeshBounds {
 }
 
 /** What the rays are cast against: the meshes of the scanned model */
-type RayTargets = MeshBounds[];
+export type RayTargets = MeshBounds[];
 
 /**
  * World-space bounding box of every mesh, once per build (the scene is static during the scan).
  * Casting against the whole scene costs a fixed ~2 ms per ray with a few hundred meshes (each one is asked,
  * BVH or not), whatever the ray length: see intersectTargets
  */
-function collectRayTargets(scene: THREE.Object3D): RayTargets {
+export function collectRayTargets(scene: THREE.Object3D): RayTargets {
     scene.updateMatrixWorld(true);
     const targets: RayTargets = [];
     scene.traverse(obj => {
@@ -147,7 +147,7 @@ const _worldNormal = new THREE.Vector3();
 /**
  * Sent a vertical ray and return Y hits (filtered normal)
  */
-function castDown(
+export function castDown(
     targets: RayTargets,
     raycaster: THREE.Raycaster,
     origin: THREE.Vector3,

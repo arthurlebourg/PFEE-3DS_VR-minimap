@@ -11,7 +11,8 @@ import { createFloorManager, updateFloorManager } from './floorManager.js';
 import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
-import { createEditMode, createEditModeInputHandler, getRebuildAction, setCategoryOpen } from './editMode.js';
+import { estimateGridSize } from './gridSizeEstimator.js';
+import { createEditMode, createEditModeInputHandler, getRebuildAction, setCategoryOpen, setParamRange } from './editMode.js';
 import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
 import { commitFloorMove, type MapContext } from './floorAdjust.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
@@ -104,6 +105,28 @@ async function loadSelection(): Promise<{
 }
 
 const { selection, model, modelSha1, map: loadedMap } = await loadSelection();
+
+/** Default config sized for the model: its grid size (and the grid size slider range) comes from a coarse pre-scan */
+async function configForModel(): Promise<MinimapConfig> {
+    try {
+        startScreen.setProgress(0, 'Estimation de la taille de grille…');
+        const estimate = await estimateGridSize(model, defaultConfig.normalThreshold, p => startScreen.setProgress(p, 'Estimation de la taille de grille…'));
+        console.log(
+            `Grid size estimate: ${estimate.gridSize.toFixed(2)} m (floor area ${estimate.floorArea.toFixed(0)} m², `
+            + `storey ${estimate.storeyHeight?.toFixed(2) ?? '-'} m, door ${estimate.doorWidth.toFixed(2)} m, `
+            + `budget ${estimate.budgetGridSize.toFixed(3)} m, range [${estimate.minGridSize.toFixed(2)}, ${estimate.maxGridSize.toFixed(2)}] m, ${estimate.rays} rays)`,
+        );
+        if (estimate.isTooCoarse) console.warn('Grid size estimate: model too large for the time budget, doors may not split rooms');
+        setParamRange('gridSize', estimate.minGridSize, estimate.maxGridSize);
+        return { ...defaultConfig, gridSize: estimate.gridSize };
+    } catch (e) {
+        console.warn('Grid size estimate failed, using the default grid size:', e);
+        return defaultConfig;
+    }
+}
+
+// A loaded map keeps the config it was built with
+const modelConfig = loadedMap ? defaultConfig : await configForModel();
 startScreen.close();
 scene.add(model);
 const modelBounds = new THREE.Box3().setFromObject(model);
@@ -129,8 +152,8 @@ function currentLevel(): FloorLevel | null {
 
 // Edit mode - live minimap config tuning (desktop panel + in-VR panel).
 // Starts from the config the current map was built with (a loaded map may differ from defaultConfig);
-// params added since that map was saved fall back to defaultConfig.
-const editMode = createEditMode(defaultConfig, { ...defaultConfig, ...sceneMap?.config });
+// params added since that map was saved fall back to defaultConfig. Reset goes back to the model's estimated grid size
+const editMode = createEditMode(modelConfig, { ...modelConfig, ...sceneMap?.config });
 
 let floorMoveVisual: FloorMoveVisual | null = null;
 let floorMoveVisualFloorId = -1;

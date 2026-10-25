@@ -33,7 +33,7 @@ export interface EditableParam {
 
 export const EDITABLE_PARAMS: EditableParam[] = [
     // Smaller cells = finer map but ~1/gridSize² more rays (slower build); radii/areas in cells shrink with it
-    { key: 'gridSize', category: 'general', label: 'Grid size (m)', min: 0.05, max: 1.0, step: 0.05 },
+    { key: 'gridSize', category: 'general', label: 'Grid size (m)', min: 0.05, max: 1.0, step: 0.01 },
     { key: 'normalThreshold', category: 'floors', label: 'Floor normal thr.', min: 0.1, max: 1.0, step: 0.01 },
     { key: 'minFloorGap', category: 'floors', label: 'Min floor gap', min: 0.05, max: 2.0, step: 0.01 },
     { key: 'histoHeightSize', category: 'floors', label: 'Histogram slice', min: 0.02, max: 0.5, step: 0.01 },
@@ -47,12 +47,30 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'maxSlopeDeg', category: 'stairs', label: 'Stair max slope (°)', min: 20, max: 85, step: 1 },
     { key: 'stairFlatTolerance', category: 'stairs', label: 'Stair flat tolerance', min: 0, max: 0.2, step: 0.01 },
     { key: 'maxLandingRun', category: 'stairs', label: 'Max landing run', min: 0.2, max: 5, step: 0.1 },
-    { key: 'doorWidth', category: 'rooms', label: 'Door width', min: 0.4, max: 3.0, step: 0.05 },
-    { key: 'minRoomArea', category: 'rooms', label: 'Min room area', min: 0.25, max: 20, step: 0.25 },
-    { key: 'minRoomWidth', category: 'rooms', label: 'Min room width', min: 0, max: 2.0, step: 0.05 },
-    { key: 'corridorMaxWidth', category: 'rooms', label: 'Corridor max width', min: 0.5, max: 5.0, step: 0.1 },
-    { key: 'corridorMinElongation', category: 'rooms', label: 'Corridor min elong.', min: 1.5, max: 15, step: 0.5 },
+    // Room / corridor ranges in real-world metres (the model is scaled to metres on load):
+    // over a real door (~0.9 m), under a small room (~2 m) whose core would vanish
+    { key: 'doorWidth', category: 'rooms', label: 'Door width', min: 0.6, max: 2.0, step: 0.05 },
+    // a WC / closet is ~1-2 m², a small bedroom ~8 m² must not be merged away
+    { key: 'minRoomArea', category: 'rooms', label: 'Min room area', min: 0.5, max: 8, step: 0.25 },
+    // gaps between two walls are < 0.5 m, the narrowest corridor ~0.8 m must survive
+    { key: 'minRoomWidth', category: 'rooms', label: 'Min room width', min: 0, max: 1.0, step: 0.05 },
+    // a corridor is 0.9 m (housing) to ~3 m (school, hospital) wide, over 4 m it's a gallery / hall
+    { key: 'corridorMaxWidth', category: 'rooms', label: 'Corridor max width', min: 1.0, max: 4.0, step: 0.1 },
+    // elongation = area / width², with width ≈ 4 × mean distance to the edge: a square room already scores ~2.25,
+    // a 1:2 room ~2.9, 1:3 ~3.8, 1:5 ~5.7, 1:9 ~9.7
+    { key: 'corridorMinElongation', category: 'rooms', label: 'Corridor min elong.', min: 3.5, max: 10, step: 0.5 },
 ];
+
+/**
+ * Narrow a param's range for the loaded model (e.g. grid size bounds from its estimate).
+ * Call before the panels are created: the desktop sliders read the range once
+ */
+export function setParamRange(key: keyof MinimapConfig, min: number, max: number): void {
+    const param = EDITABLE_PARAMS.find(p => p.key === key);
+    if (!param) return;
+    param.min = min;
+    param.max = max;
+}
 
 /** One line of the config list: a category header, or a param of the open category */
 export type ConfigRow =
