@@ -645,7 +645,6 @@ export function createVRMinimap3D(
     buildModel(map);
 
     const flatDir = new THREE.Vector3();
-    const lookTarget = new THREE.Vector3();
 
     const instance: VRMinimap3D = {
         root,
@@ -671,11 +670,10 @@ export function createVRMinimap3D(
                 playerMarker.position.set(localX, localY, localZ);
             }
 
-            flatDir.set(cameraDir.x, 0, cameraDir.z).normalize();
-            if (flatDir.lengthSq() > 0.001) {
-                lookTarget.copy(playerMarker.position).add(flatDir);
-                playerMarker.lookAt(lookTarget);
-            }
+            // The maquette's axes are the model's (world) axes: turn the cone (tip on local -Z) about the base's
+            // vertical to the gaze heading. lookAt would take a world point and tilt the cone out of the base
+            flatDir.set(cameraDir.x, 0, cameraDir.z);
+            if (flatDir.lengthSq() > 1e-6) playerMarker.rotation.set(0, Math.atan2(-flatDir.x, -flatDir.z), 0);
 
             // Off any room (doorway, wall footprint) the last room stays highlighted
             const level = currentMap.levels[currentHighlightIdx];
