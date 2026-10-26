@@ -52,9 +52,8 @@ const defaultConfig: MinimapConfig = {
     minPeakArea: 2,
     floorOpeningRadius: 5, // cells, opening by reconstruction: areas with nothing wider than this disk are noise and removed (0 = off)
     // Wall detection
-    wallScanHeight: 1.0, // metres above floorY where horizontal rays are fired
+    wallScanHeight: 1.3, // metres above floorY where horizontal rays are fired: above furniture, under door lintels
     wallNormalThreshold: 0.3, // |normal.y| < this => wall (0 = perfectly vertical only)
-    wallRayLength: 0.125, // max ray length (≈ gridSize * 1.25)
     // Ground variation connectors
     minStairArea: 0.15, // m², filters out single-cell raycast noise
     maxStairArea: 30, // m², > treat as sub-level, not staircase. Also holds the flat floor around the seed (see maxLandingRun)
