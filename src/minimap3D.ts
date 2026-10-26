@@ -1,5 +1,19 @@
 import * as THREE from 'three';
-import type { SceneMap, FloorLevel } from './minimap.js';
+import { WALL_N, WALL_E, WALL_S, WALL_W, type SceneMap, type FloorLevel } from './minimap.js';
+import { NO_ROOM } from './roomSegmentation.js';
+
+/**
+ * How the active floor is drawn
+ *  solid              : every cell and wall, translucent
+ *  room               : wireframe, the player's room solid
+ *  roomAndNeighbours  : wireframe, the player's room solid and the rooms reachable from it without crossing a wall dimmer
+ */
+export type MinimapDisplayMode = 'solid' | 'room' | 'roomAndNeighbours';
+
+export const MINIMAP_DISPLAY_MODES: MinimapDisplayMode[] = ['solid', 'room', 'roomAndNeighbours'];
+
+// Off any room (wall footprint, doorway scrap): the nearest room within this many cells is the player's
+const ROOM_SEARCH_CELLS = 3;
 
 export interface Minimap3DConfig {
     /** Target maximum dimension of the building in meters (12 to 15 cm) */
@@ -30,6 +44,13 @@ export interface Minimap3DConfig {
     pedestalBorderColor: number;
     /** Color of the player 3D marker */
     playerMarkerColor: number;
+    /** How the active floor is drawn */
+    displayMode: MinimapDisplayMode;
+    /** Wireframe line color and opacity (room display modes) */
+    wireColor: number;
+    wireOpacity: number;
+    /** Slab and wall color of the rooms next to the player's (roomAndNeighbours mode) */
+    neighbourColor: number;
 }
 
 export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
@@ -47,6 +68,10 @@ export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
     pedestalColor: 0x07111c,
     pedestalBorderColor: 0x00f0ff,
     playerMarkerColor: 0xff3344,
+    displayMode: 'solid',
+    wireColor: 0x7fe8ff,
+    wireOpacity: 0.45,
+    neighbourColor: 0x2f7fd0,
 };
 
 export type UpperFloorsMode = 'dim' | 'hide';
@@ -59,6 +84,8 @@ export interface Floor3D {
     slabsMesh: THREE.Mesh;
     wallsMesh: THREE.Mesh;
     wallEdgesMesh?: THREE.LineSegments;
+    /** Floor outline, wall bottoms, wall tops and wall corners as lines (room display modes) */
+    wireMesh?: THREE.LineSegments;
 }
 
 export interface VRMinimap3D {
@@ -73,6 +100,8 @@ export interface VRMinimap3D {
     setFloorHighlight: (floorIndex: number, isPreview?: boolean) => void;
     setUpperFloorsMode: (mode: UpperFloorsMode) => void;
     getUpperFloorsMode: () => UpperFloorsMode;
+    setDisplayMode: (mode: MinimapDisplayMode) => void;
+    getDisplayMode: () => MinimapDisplayMode;
     setWristOffset: (x: number, y: number, z: number) => void;
     setWristTilt: (pitchDegrees: number, yawDegrees?: number) => void;
     setTargetSize: (sizeMeters: number) => void;
@@ -93,16 +122,22 @@ function pushQuad(
     idx.push(base, base + 2, base + 1, base, base + 3, base + 2);
 }
 
+/** Keeps only some cells of the floor's main walkable grid (e.g. one room's) */
+type CellFilter = (r: number, c: number) => boolean;
+
 export function buildFloorSlabsGeometry(
     level: FloorLevel,
     sceneBounds: { sceneMinX: number; sceneMinZ: number },
     gridSize: number,
     slabHeight = 0.05,
-    slabGapRatio = 0.04
+    slabGapRatio = 0.04,
+    cellFilter?: CellFilter
 ): THREE.BufferGeometry {
     const { sceneMinX, sceneMinZ } = sceneBounds;
     const half = (gridSize * (1 - slabGapRatio)) * 0.5;
-    const layers = [{ walkable: level.walkable, y: level.floorY }, ...(level.subLevels?.map(s => ({ walkable: s.walkable, y: s.absoluteY })) ?? [])];
+    // Sub-levels have no room ids: a filtered build keeps the main grid only
+    const subLayers = cellFilter ? [] : (level.subLevels?.map(s => ({ walkable: s.walkable, y: s.absoluteY })) ?? []);
+    const layers = [{ walkable: level.walkable, y: level.floorY }, ...subLayers];
     const pos: number[] = [], norm: number[] = [], idx: number[] = [];
 
     for (const { walkable, y } of layers) {
@@ -110,6 +145,7 @@ export function buildFloorSlabsGeometry(
         for (let r = 0; r < walkable.length; r++) {
             for (let c = 0; c < (walkable[0]?.length ?? 0); c++) {
                 if (!walkable[r]?.[c]) continue;
+                if (cellFilter && !cellFilter(r, c)) continue;
                 const cx = sceneMinX + (c + 0.5) * gridSize;
                 const cz = sceneMinZ + (r + 0.5) * gridSize;
                 const x0 = cx - half, x1 = cx + half, z0 = cz - half, z1 = cz + half;
@@ -144,7 +180,8 @@ export function buildFloorWallsGeometry(
     sceneBounds: { sceneMinX: number; sceneMinZ: number },
     gridSize: number,
     slabHeight = 0.05,
-    wallHeight = 2.2
+    wallHeight = 2.2,
+    cellFilter?: CellFilter
 ): THREE.BufferGeometry {
     if (!level.walls?.length) return new THREE.BufferGeometry();
     const { sceneMinX, sceneMinZ } = sceneBounds;
@@ -155,6 +192,7 @@ export function buildFloorWallsGeometry(
         for (let c = 0; c < (level.walls[0]?.length ?? 0); c++) {
             const mask = level.walls[r]?.[c] ?? 0;
             if (!mask || !level.walkable[r]?.[c]) continue;
+            if (cellFilter && !cellFilter(r, c)) continue;
             const cx = sceneMinX + (c + 0.5) * gridSize;
             const cz = sceneMinZ + (r + 0.5) * gridSize;
 
@@ -206,6 +244,143 @@ export function buildFloorWallEdgesGeometry(
     const geo = new THREE.BufferGeometry();
     if (pos.length > 0) geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     return geo;
+}
+
+/**
+ * Wireframe of a floor: walkable area outline and wall bottoms at slab level, wall tops, and a vertical line at each
+ * wall end or corner (not along straight runs, which would draw a fence)
+ */
+export function buildFloorWireframeGeometry(
+    level: FloorLevel,
+    sceneBounds: { sceneMinX: number; sceneMinZ: number },
+    gridSize: number,
+    slabHeight = 0.05,
+    wallHeight = 2.2
+): THREE.BufferGeometry {
+    const { sceneMinX, sceneMinZ } = sceneBounds;
+    const rows = level.walkable.length, cols = level.walkable[0]?.length ?? 0;
+    const yBot = level.floorY + slabHeight, yTop = level.floorY + wallHeight;
+    const isWalkable = (r: number, c: number) => !!level.walkable[r]?.[c];
+
+    // Cell sides on the grid lines: 'h r c' goes from vertex (r, c) to (r, c + 1), 'v r c' from (r, c) to (r + 1, c).
+    // Two cells sharing a wall side give the same key
+    const wallSides = new Set<string>();
+    const outlineSides = new Set<string>();
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            if (!level.walkable[r]?.[c]) continue;
+            const mask = level.walls?.[r]?.[c] ?? 0;
+            const sides: [bit: number, neighbourWalkable: boolean, key: string][] = [
+                [WALL_N, isWalkable(r - 1, c), `h ${r} ${c}`],
+                [WALL_S, isWalkable(r + 1, c), `h ${r + 1} ${c}`],
+                [WALL_W, isWalkable(r, c - 1), `v ${r} ${c}`],
+                [WALL_E, isWalkable(r, c + 1), `v ${r} ${c + 1}`],
+            ];
+            for (const [bit, neighbourWalkable, key] of sides) {
+                if (mask & bit) wallSides.add(key);
+                else if (!neighbourWalkable) outlineSides.add(key);
+            }
+        }
+    }
+
+    const vx = (c: number) => sceneMinX + c * gridSize;
+    const vz = (r: number) => sceneMinZ + r * gridSize;
+    const sideEnds = (key: string): [number, number, number, number] => {
+        const [kind, rs, cs] = key.split(' ');
+        const r = Number(rs), c = Number(cs);
+        return kind === 'h' ? [r, c, r, c + 1] : [r, c, r + 1, c];
+    };
+
+    const pos: number[] = [];
+    // Wall sides meeting at each grid vertex: dirs bit 1 = along x, bit 2 = along z
+    const vertices = new Map<string, { r: number; c: number; dirs: number; count: number }>();
+    for (const key of wallSides) {
+        const [r0, c0, r1, c1] = sideEnds(key);
+        pos.push(vx(c0), yBot, vz(r0), vx(c1), yBot, vz(r1));
+        pos.push(vx(c0), yTop, vz(r0), vx(c1), yTop, vz(r1));
+        const dir = r0 === r1 ? 1 : 2;
+        for (const [r, c] of [[r0, c0], [r1, c1]]) {
+            const vertexKey = `${r} ${c}`;
+            const vertex = vertices.get(vertexKey) ?? { r, c, dirs: 0, count: 0 };
+            vertex.dirs |= dir;
+            vertex.count++;
+            vertices.set(vertexKey, vertex);
+        }
+    }
+    for (const key of outlineSides) {
+        const [r0, c0, r1, c1] = sideEnds(key);
+        pos.push(vx(c0), yBot, vz(r0), vx(c1), yBot, vz(r1));
+    }
+    // Wall end (a single side) or corner (sides along both axes)
+    for (const { r, c, dirs, count } of vertices.values()) {
+        if (count === 1 || dirs === 3) pos.push(vx(c), yBot, vz(r), vx(c), yTop, vz(r));
+    }
+
+    const geo = new THREE.BufferGeometry();
+    if (pos.length > 0) geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    return geo;
+}
+
+/** Room of the cell under (x, z), or of the nearest room cell within ROOM_SEARCH_CELLS. NO_ROOM if none */
+function roomAt(level: FloorLevel, sceneBounds: { sceneMinX: number; sceneMinZ: number }, gridSize: number, x: number, z: number): number {
+    if (!level.roomIds?.length) return NO_ROOM;
+    const r0 = Math.floor((z - sceneBounds.sceneMinZ) / gridSize);
+    const c0 = Math.floor((x - sceneBounds.sceneMinX) / gridSize);
+    for (let radius = 0; radius <= ROOM_SEARCH_CELLS; radius++) {
+        for (let dr = -radius; dr <= radius; dr++) {
+            for (let dc = -radius; dc <= radius; dc++) {
+                if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue; // this ring only
+                const id = level.roomIds[r0 + dr]?.[c0 + dc];
+                if (id !== undefined && id !== NO_ROOM) return id;
+            }
+        }
+    }
+    return NO_ROOM;
+}
+
+// Doorway cells may belong to no room: a neighbour is reached through at most this many of them
+const NEIGHBOUR_GAP_CELLS = 3;
+
+const STEPS = [
+    { dr: -1, dc: 0, bit: WALL_N, opposite: WALL_S },
+    { dr: 0, dc: 1, bit: WALL_E, opposite: WALL_W },
+    { dr: 1, dc: 0, bit: WALL_S, opposite: WALL_N },
+    { dr: 0, dc: -1, bit: WALL_W, opposite: WALL_E },
+];
+
+/** Rooms reachable from a room without crossing a wall: through a doorway or an open split */
+function findRoomNeighbours(level: FloorLevel, roomId: number): Set<number> {
+    const { roomIds, walls, walkable } = level;
+    const cols = roomIds[0]?.length ?? 0;
+    const neighbours = new Set<number>();
+    const seen = new Set<number>();
+    let frontier: [number, number][] = [];
+    for (let r = 0; r < roomIds.length; r++) {
+        for (let c = 0; c < cols; c++) {
+            if (roomIds[r][c] !== roomId) continue;
+            frontier.push([r, c]);
+            seen.add(r * cols + c);
+        }
+    }
+
+    for (let depth = 0; depth <= NEIGHBOUR_GAP_CELLS && frontier.length > 0; depth++) {
+        const next: [number, number][] = [];
+        for (const [r, c] of frontier) {
+            for (const { dr, dc, bit, opposite } of STEPS) {
+                const nr = r + dr, nc = c + dc;
+                if (nc < 0 || nc >= cols || !walkable[nr]?.[nc]) continue;
+                if (((walls[r]?.[c] ?? 0) & bit) || ((walls[nr]?.[nc] ?? 0) & opposite)) continue;
+                const key = nr * cols + nc;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const id = roomIds[nr]?.[nc] ?? NO_ROOM;
+                if (id === NO_ROOM) next.push([nr, nc]);
+                else neighbours.add(id);
+            }
+        }
+        frontier = next;
+    }
+    return neighbours;
 }
 
 function createPedestal(radius: number, config: Minimap3DConfig) {
@@ -308,7 +483,12 @@ export function createVRMinimap3D(
     const wallMat = new THREE.MeshBasicMaterial({ color: config.wallColor, transparent: true, opacity: config.wallOpacity, side: THREE.DoubleSide });
     const edgeMat = new THREE.LineBasicMaterial({ color: 0x99ffff, transparent: true, opacity: 0.95 });
     const previewEdgeMat = new THREE.LineBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.95 });
-    const sharedMaterials = [slabMat, previewSlabMat, wallMat, edgeMat, previewEdgeMat];
+    const wireMat = new THREE.LineBasicMaterial({ color: config.wireColor, transparent: true, opacity: config.wireOpacity, depthWrite: false });
+    const roomSlabMat = new THREE.MeshBasicMaterial({ color: config.activeColor, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+    const roomWallMat = new THREE.MeshBasicMaterial({ color: config.wallColor, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
+    const neighbourSlabMat = new THREE.MeshBasicMaterial({ color: config.neighbourColor, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+    const neighbourWallMat = new THREE.MeshBasicMaterial({ color: config.neighbourColor, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
+    const sharedMaterials = [slabMat, previewSlabMat, wallMat, edgeMat, previewEdgeMat, wireMat, roomSlabMat, roomWallMat, neighbourSlabMat, neighbourWallMat];
 
     let dynamicDisposables: (THREE.BufferGeometry | THREE.Material)[] = [];
     let floors: Floor3D[] = [];
@@ -316,10 +496,64 @@ export function createVRMinimap3D(
     let centerX = 0, centerZ = 0, minY = 0, pedestalRadius = 0.08;
     let currentMap: SceneMap = map;
 
+    // Room display modes: the player's room (and its neighbours) drawn solid over the wireframe, rebuilt on room change
+    const roomHighlight = new THREE.Group();
+    let roomHighlightGeometries: THREE.BufferGeometry[] = [];
+    let currentRoomId = NO_ROOM;
+    let highlightedKey = '';
+
+    function isRoomMode(): boolean {
+        return config.displayMode !== 'solid' && !currentIsPreview;
+    }
+
+    function clearRoomHighlight() {
+        for (const geo of roomHighlightGeometries) geo.dispose();
+        roomHighlightGeometries = [];
+        roomHighlight.clear();
+        roomHighlight.removeFromParent();
+    }
+
+    function addRoomHighlight(geo: THREE.BufferGeometry, material: THREE.Material, renderOrder: number) {
+        roomHighlightGeometries.push(geo);
+        if (!geo.attributes.position) return;
+        const mesh = new THREE.Mesh(geo, material);
+        mesh.renderOrder = renderOrder;
+        roomHighlight.add(mesh);
+    }
+
+    function updateRoomHighlight() {
+        const key = isRoomMode() && currentRoomId !== NO_ROOM ? `${currentHighlightIdx} ${currentRoomId} ${config.displayMode}` : '';
+        if (key === highlightedKey) return;
+        highlightedKey = key;
+        clearRoomHighlight();
+        const level = currentMap.levels[currentHighlightIdx];
+        const floor = floors[currentHighlightIdx];
+        if (!key || !level || !floor) return;
+
+        const { sceneBounds, gridSize } = currentMap;
+        const roomId = currentRoomId;
+        const inRoom = (r: number, c: number) => level.roomIds[r]?.[c] === roomId;
+        addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.slabGapRatio, inRoom), roomSlabMat, 5);
+        addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inRoom), roomWallMat, 6);
+
+        if (config.displayMode === 'roomAndNeighbours') {
+            const neighbours = findRoomNeighbours(level, roomId);
+            if (neighbours.size > 0) {
+                const inNeighbour = (r: number, c: number) => neighbours.has(level.roomIds[r]?.[c] ?? NO_ROOM);
+                addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.slabGapRatio, inNeighbour), neighbourSlabMat, 4);
+                addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inNeighbour), neighbourWallMat, 5);
+            }
+        }
+        floor.group.add(roomHighlight);
+    }
+
     function buildModel(sceneMap: SceneMap) {
         currentMap = sceneMap;
         for (const item of dynamicDisposables) item.dispose();
         dynamicDisposables = [];
+        clearRoomHighlight();
+        currentRoomId = NO_ROOM;
+        highlightedKey = '';
         floors = [];
         buildingContainer.clear();
         pedestalGroup.clear();
@@ -365,8 +599,17 @@ export function createVRMinimap3D(
                 dynamicDisposables.push(edgesGeo);
             }
 
+            const wireGeo = buildFloorWireframeGeometry(level, sceneMap.sceneBounds, sceneMap.gridSize, config.slabHeight, config.wallHeight);
+            let wireMesh: THREE.LineSegments | undefined;
+            dynamicDisposables.push(wireGeo);
+            if (wireGeo.attributes.position) {
+                wireMesh = new THREE.LineSegments(wireGeo, wireMat);
+                wireMesh.renderOrder = 3;
+                floorGroup.add(wireMesh);
+            }
+
             buildingContainer.add(floorGroup);
-            floors.push({ id: level.id, floorY: level.floorY, ceilingY: level.ceilingY, group: floorGroup, slabsMesh: slabMesh, wallsMesh: wallMesh, wallEdgesMesh });
+            floors.push({ id: level.id, floorY: level.floorY, ceilingY: level.ceilingY, group: floorGroup, slabsMesh: slabMesh, wallsMesh: wallMesh, wallEdgesMesh, wireMesh });
         });
 
         const { group: markerGroup, disposables: markerDisposables } = create3DPlayerMarker(config);
@@ -378,6 +621,8 @@ export function createVRMinimap3D(
     }
 
     function applyFloorStyling() {
+        // A previewed floor is not the player's: no room to highlight, drawn solid
+        const roomMode = isRoomMode();
         floors.forEach((f, idx) => {
             const isActive = idx === currentHighlightIdx;
             if (isActive) {
@@ -389,7 +634,12 @@ export function createVRMinimap3D(
                 f.group.visible = false;
                 f.group.position.y = 0;
             }
+            f.slabsMesh.visible = !roomMode;
+            f.wallsMesh.visible = !roomMode;
+            if (f.wallEdgesMesh) f.wallEdgesMesh.visible = !roomMode;
+            if (f.wireMesh) f.wireMesh.visible = roomMode;
         });
+        updateRoomHighlight();
     }
 
     buildModel(map);
@@ -426,17 +676,37 @@ export function createVRMinimap3D(
                 lookTarget.copy(playerMarker.position).add(flatDir);
                 playerMarker.lookAt(lookTarget);
             }
+
+            // Off any room (doorway, wall footprint) the last room stays highlighted
+            const level = currentMap.levels[currentHighlightIdx];
+            if (isRoomMode() && level) {
+                const roomId = roomAt(level, currentMap.sceneBounds, currentMap.gridSize, playerPos.x, playerPos.z);
+                if (roomId !== NO_ROOM && roomId !== currentRoomId) {
+                    currentRoomId = roomId;
+                    updateRoomHighlight();
+                }
+            }
         },
 
         setFloorHighlight: (floorIndex: number, isPreview = false) => {
             if (currentHighlightIdx === floorIndex && currentIsPreview === isPreview) return;
-            currentHighlightIdx = Math.max(0, Math.min(floors.length - 1, floorIndex));
+            const nextIdx = Math.max(0, Math.min(floors.length - 1, floorIndex));
+            if (nextIdx !== currentHighlightIdx) currentRoomId = NO_ROOM; // room ids are per floor
+            currentHighlightIdx = nextIdx;
             currentIsPreview = isPreview;
             applyFloorStyling();
         },
 
         setUpperFloorsMode: () => {},
         getUpperFloorsMode: () => 'hide',
+
+        setDisplayMode: (mode: MinimapDisplayMode) => {
+            if (config.displayMode === mode) return;
+            config.displayMode = mode;
+            applyFloorStyling();
+        },
+
+        getDisplayMode: () => config.displayMode,
 
         setWristOffset: (x: number, y: number, z: number) => {
             config.wristOffset.set(x, y, z);
@@ -473,6 +743,7 @@ export function createVRMinimap3D(
         },
 
         dispose: () => {
+            clearRoomHighlight();
             for (const item of dynamicDisposables) item.dispose();
             for (const mat of sharedMaterials) mat.dispose();
             if (root.parent) root.parent.remove(root);

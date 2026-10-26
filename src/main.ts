@@ -8,7 +8,7 @@ import {
     type SceneMap, type MinimapConfig, type FloorLevel,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager, getActiveFloorIdx } from './floorManager.js';
-import { createVRMinimap3D, type VRMinimap3D } from './minimap3D.ts';
+import { createVRMinimap3D, MINIMAP_DISPLAY_MODES, type VRMinimap3D } from './minimap3D.ts';
 import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
@@ -145,6 +145,14 @@ function toggleMinimap3D(): void {
     hudMinimapVisible = !hudMinimapVisible;
     hudMinimapAnchor.visible = hudMinimapVisible;
     if (vrMinimap3D) vrMinimap3D.setVisible(hudMinimapVisible);
+}
+
+// solid -> room -> room and neighbours -> solid
+function cycleMinimapDisplayMode(): void {
+    if (!vrMinimap3D) return;
+    const next = MINIMAP_DISPLAY_MODES[(MINIMAP_DISPLAY_MODES.indexOf(vrMinimap3D.getDisplayMode()) + 1) % MINIMAP_DISPLAY_MODES.length];
+    vrMinimap3D.setDisplayMode(next);
+    console.log(`Minimap 3D display: ${next}`);
 }
 
 // Floor state
@@ -565,18 +573,24 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Left stick click shows / hides the 3D minimap. Disabled in edit mode, where it switches panel
+// Left stick click shows / hides the 3D minimap, right stick click changes its display mode.
+// Disabled in edit mode, where both stick clicks are taken
 let lastVRMinimapBtnState = false;
+let lastVRDisplayModeBtnState = false;
 function updateVRMinimapToggleInput(): void {
     const session = renderer.xr.getSession();
     if (!session) return;
     for (const source of session.inputSources) {
-        if (source.handedness !== 'left') continue;
         const gp = source.gamepad;
         if (!gp) continue;
         const pressed = gp.buttons[3]?.pressed ?? false;
-        if (pressed && !lastVRMinimapBtnState && !editMode.active) toggleMinimap3D();
-        lastVRMinimapBtnState = pressed;
+        if (source.handedness === 'left') {
+            if (pressed && !lastVRMinimapBtnState && !editMode.active) toggleMinimap3D();
+            lastVRMinimapBtnState = pressed;
+        } else if (source.handedness === 'right') {
+            if (pressed && !lastVRDisplayModeBtnState && !editMode.active) cycleMinimapDisplayMode();
+            lastVRDisplayModeBtnState = pressed;
+        }
     }
 }
 
@@ -601,4 +615,5 @@ window.addEventListener('keydown', e => {
     }
     if ((e.key === 'r' || e.key === 'R') && editMode.active) void rebuildMinimap();
     if (e.key === 'm' || e.key === 'M') toggleMinimap3D();
+    if (e.key === 'v' || e.key === 'V') cycleMinimapDisplayMode();
 });

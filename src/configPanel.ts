@@ -6,7 +6,7 @@ import {
     type MapContext,
     selectNextFloor, toggleAxisMode, nudgeVerticalStep, nudgeHorizontal, cancelPreview, hasPendingPreview,
 } from './floorAdjust.js';
-import type { VRMinimap3D } from './minimap3D.ts';
+import { MINIMAP_DISPLAY_MODES, type MinimapDisplayMode, type VRMinimap3D } from './minimap3D.ts';
 
 // Desktop panel (HTML overlay)
 
@@ -307,6 +307,24 @@ export function createDesktopConfigPanel(
     Object.assign(mmTitle.style, { marginBottom: '8px', color: '#00f0ff', fontWeight: 'bold' });
     minimapSection.appendChild(mmTitle);
 
+    // Display mode (also V on desktop, right stick click in VR)
+    const displayLabel = document.createElement('div');
+    displayLabel.textContent = 'Affichage (V / stick droit) :';
+    Object.assign(displayLabel.style, { color: '#888', marginBottom: '4px' });
+    minimapSection.appendChild(displayLabel);
+
+    const displayRow = document.createElement('div');
+    Object.assign(displayRow.style, { display: 'flex', gap: '4px', marginBottom: '8px' });
+    const displayLabels: Record<MinimapDisplayMode, string> = { solid: 'Plein', room: 'Pièce', roomAndNeighbours: 'Pièce + voisines' };
+    const displayBtns = new Map<MinimapDisplayMode, HTMLButtonElement>();
+    for (const mode of MINIMAP_DISPLAY_MODES) {
+        const btn = makeSmallBtn(displayLabels[mode]);
+        btn.addEventListener('click', () => getVRMinimap3D?.()?.setDisplayMode(mode));
+        displayRow.appendChild(btn);
+        displayBtns.set(mode, btn);
+    }
+    minimapSection.appendChild(displayRow);
+
     function createMinimapSlider(
         label: string, min: number, max: number, step: number, defaultVal: number,
         unit: string, onChange: (val: number) => void
@@ -464,6 +482,9 @@ export function createDesktopConfigPanel(
         configSection.style.display = state.panel === 'config' ? 'block' : 'none';
         floorsSection.style.display = state.panel === 'floors' ? 'block' : 'none';
         minimapSection.style.display = state.panel === 'minimap3d' ? 'block' : 'none';
+
+        const displayMode = getVRMinimap3D?.()?.getDisplayMode();
+        for (const [mode, btn] of displayBtns) btn.style.background = mode === displayMode ? '#2668a6' : '#444';
 
         for (const { key } of PARAM_CATEGORIES) {
             const open = state.openCategory === key;
