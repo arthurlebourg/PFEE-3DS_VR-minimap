@@ -122,7 +122,7 @@ export interface SceneMap {
 /**
  * @typedef MinimapConfig
  * @prop gridSize Total size of the grid map
- * @prop minWalkableArea Minimal walkable area to define a walkable space
+ * @prop minWalkableArea Minimal walkable area (m²) of a floor: under it, the floor is noise
  * @prop normalThreshold Normal max differential angle
  * @prop voxYThr floor thickness
  * @prop minFloorGap gap minimal between 2 floors
@@ -134,7 +134,7 @@ export interface SceneMap {
  * @prop minStairArea Minimal area (m²) for a climbed group of cells to be considered a stair connector
  * @prop maxStairArea Maximal area (m²) above which a group is treated as a mezzanine, not a staircase
  * @prop maxSlopeDeg Steepest slope (degrees) climbed from a floor's edge: two adjacent cells accepted up to
- *                   gridSize * tan(maxSlopeDeg) of height difference, so the limit follows the grid size.
+ *                   gridSize * tan(maxSlopeDeg) of height difference, so the limit follows the grid size (or a stair riser).
  * @prop stairFlatTolerance Max |ΔY| (m) between adjacent cells still considered "flat" (landings, raycast noise)
  * @prop maxLandingRun Max consecutive flat cells (m, converted to a cell count) allowed before a plateau is treated as a dead end
  * @prop doorWidth Openings narrower than this separate two rooms (room segmentation)

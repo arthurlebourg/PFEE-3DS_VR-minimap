@@ -10,15 +10,23 @@ const MACRO_CELL_MULTIPLIER = 4;
 // Below this rise, a climb is noise, not a stair
 const MIN_CONNECTOR_RISE = 0.15;
 
+// A climb landing on no floor and rising less than this is a step onto a raised part of the floor (platform, bed...),
+// not a staircase: dropped
+const MIN_DEAD_END_RISE = 1.0;
+
 // Wall rays reach this many cells from the cell centre: past the cell's edge, but not to a wall a cell further
 const WALL_RAY_CELLS = 1.25;
 
 // Wall fragments shorter than this (m) are removed: isolated specks, not walls
 const MIN_WALL_LENGTH = 0.2;
 
-/** Height (m) a stair flood may climb between two adjacent cells: the steepest slope over one cell */
+// A real stair riser (m): a step change between two cells, whatever the grid size. On a fine grid it's taller than the
+// slope limit over one cell (0.17 m at 0.1 m and 60°), which would stop the flood at every step
+const MAX_STAIR_RISER = 0.25;
+
+/** Height (m) a stair flood may climb between two adjacent cells: the steepest slope over one cell, or a riser */
 function maxStepRise(config: MinimapConfig, gridSize: number): number {
-    return gridSize * Math.tan(config.maxSlopeDeg * Math.PI / 180);
+    return Math.max(gridSize * Math.tan(config.maxSlopeDeg * Math.PI / 180), MAX_STAIR_RISER);
 }
 
 // Default max time spent computing before handing control back to the browser (repaint, input)
@@ -891,11 +899,28 @@ async function detectStairConnectors(
                 if (connector) connectors.push(connector);
             }
         }
-        console.log(`    Floor ${level.id} : ${boundarySeeds} boundary seeds, ${riseSeeds} rise seeds`);
+        // Arrival seeds: in a stairwell the next flight goes on from where the one from below arrives. That landing is
+        // often not part of the floor (too narrow, the noise removal drops it), so no boundary seed is there
+        let arrivalSeeds = 0;
+        const arrivingHere = connectors.filter(conn => conn.toFloorId === level.id);
+        for (const conn of arrivingHere) {
+            for (const { r, c, y } of conn.exitCells ?? []) {
+                await yielder.maybeYield(() => onProgress((li + 1) / levels.length));
+                if (claimedByThisFloor.has(`${r}_${c}`)) continue;
+
+                arrivalSeeds++;
+                const connector = climbFromSeed({ r, c }, level, heightNear, heightInBand, wallBetween, levels, claimedByThisFloor, gridSize, config, onReject, y);
+                if (connector) connectors.push(connector);
+            }
+        }
+        console.log(`    Floor ${level.id} : ${boundarySeeds} boundary seeds, ${riseSeeds} rise seeds, ${arrivalSeeds} arrival seeds`);
     }
 
     if (STAIR_FLOOD_USES_WALLS) console.log(`    Walls : ${wallRays} edges checked, ${wallBlocked} blocked the flood`);
-    return { connectors: mergeConnectors(connectors, levels, gridSize), rejected };
+    const merged = mergeConnectors(connectors, levels, gridSize);
+    const kept = merged.filter(conn => conn.resolved || conn.exitY - conn.entryY >= MIN_DEAD_END_RISE);
+    console.log(`    ${merged.length - kept.length} dead-end climb(s) rising less than ${MIN_DEAD_END_RISE} m dropped`);
+    return { connectors: kept, rejected };
 }
 
 /**
@@ -1285,6 +1310,14 @@ async function runBuildSteps(
 
         if (bestComponent.length === 0) {
             console.log(`    Nothing left after opening (disk r=${openingRadius}) => noise, ignored`);
+            console.groupEnd();
+            continue;
+        }
+
+        // A tank top, a roof bump: too small to be a floor
+        const walkableArea = walkable.flat().filter(Boolean).length * gridSize * gridSize;
+        if (walkableArea < minWalkableArea) {
+            console.log(`    ${walkableArea.toFixed(1)} m² walkable (< ${minWalkableArea} m²) => noise, ignored`);
             console.groupEnd();
             continue;
         }

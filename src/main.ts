@@ -48,10 +48,10 @@ scene.add(dirLight);
 
 const defaultConfig: MinimapConfig = {
     gridSize: 0.1,
-    minWalkableArea: 1.0,
+    minWalkableArea: 3.0, // m², a floor smaller than this is noise (tank top, roof bump)
     normalThreshold: 0.7,
     voxYThr: 0.15,
-    minFloorGap: 0.4,
+    minFloorGap: 1.5, // m, surfaces closer than this above a floor (furniture, landings, raised parts) are part of it: no one stands under 1.5 m
     histoHeightSize: 0.15,
     minPeakArea: 2,
     floorOpeningRadius: 5, // cells, opening by reconstruction: areas with nothing wider than this disk are noise and removed (0 = off)
@@ -61,9 +61,9 @@ const defaultConfig: MinimapConfig = {
     // Ground variation connectors
     minStairArea: 0.15, // m², filters out single-cell raycast noise
     maxStairArea: 30, // m², > treat as sub-level, not staircase. Also holds the flat floor around the seed (see maxLandingRun)
-    maxSlopeDeg: 60, // °, steepest slope a stair flood climbs: max Y rise per cell = gridSize * tan(maxSlopeDeg)
+    maxSlopeDeg: 60, // °, steepest slope a stair flood climbs: max Y rise per cell = gridSize * tan(maxSlopeDeg), or a 0.25 m riser
     stairFlatTolerance: 0.03, // m, |deltaY| under this still counts as a flat step (keep it well under the max rise per cell)
-    maxLandingRun: 1.2, // m, max consecutive flat run before considering that's a dead end
+    maxLandingRun: 2.0, // m, max consecutive flat run before considering that's a dead end: across the landing of a U-shaped staircase
     // Room segmentation
     doorWidth: 1.0, // openings narrower than this (m) split two rooms
     minRoomArea: 1.5, // rooms smaller than this (m²) are merged into a neighbour
