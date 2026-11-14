@@ -102,10 +102,13 @@ export interface StairConnector {
  * @prop levels Available floors
  * @prop modelSha1 SHA-1 of the GLB file the map was built from (null if it couldn't be computed)
  * @prop config Parameters the map was built with
+ * @prop modelScale scale the model was loaded at when the map was built. Missing in maps saved before it was
+ * stored: those were built at the power of 10 auto-scale
  */
 export interface SceneMap {
     version: number;
     modelSha1: string | null;
+    modelScale?: number;
     config: MinimapConfig;
     sceneBounds: { sceneMinX: number; sceneMinZ: number; };
     bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
