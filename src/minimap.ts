@@ -128,7 +128,6 @@ export interface SceneMap {
  * @prop floorOpeningRadius Disk radius (cells) of the opening by reconstruction: floor areas with nothing left after an opening by this disk are noise (0 = off)
  * @prop wallScanHeight Height above floorY at which horizontal rays are cast for wall detection
  * @prop wallNormalThreshold Max |normal.y| to classify a surface as a wall (lower = more vertical)
- * @prop wallRayLength Maximum length of horizontal rays for wall detection
  * @prop minStairArea Minimal area (m²) for a climbed group of cells to be considered a stair connector
  * @prop maxStairArea Maximal area (m²) above which a group is treated as a mezzanine, not a staircase
  * @prop maxSlopeDeg Steepest slope (degrees) climbed from a floor's edge: two adjacent cells accepted up to
@@ -152,7 +151,6 @@ export interface MinimapConfig {
     floorOpeningRadius: number;
     wallScanHeight: number;
     wallNormalThreshold: number;
-    wallRayLength: number;
     minStairArea: number;
     maxStairArea: number;
     maxSlopeDeg: number;

@@ -10,6 +10,12 @@ const MACRO_CELL_MULTIPLIER = 4;
 // Below this rise, a climb is noise, not a stair
 const MIN_CONNECTOR_RISE = 0.15;
 
+// Wall rays reach this many cells from the cell centre: past the cell's edge, but not to a wall a cell further
+const WALL_RAY_CELLS = 1.25;
+
+// Wall fragments shorter than this (m) are removed: isolated specks, not walls
+const MIN_WALL_LENGTH = 0.2;
+
 /** Height (m) a stair flood may climb between two adjacent cells: the steepest slope over one cell */
 function maxStepRise(config: MinimapConfig, gridSize: number): number {
     return gridSize * Math.tan(config.maxSlopeDeg * Math.PI / 180);
@@ -224,7 +230,7 @@ function castHorizontal(
 /**
  * Build a wall bitmask grid for a floor level.
  * For each walkable cell, fire 4 horizontal rays (N/E/S/W) and mark the corresponding
- * face bit when a wall is detected within wallRayLength.
+ * face bit when a wall is detected within WALL_RAY_CELLS cells.
  *
  * Bitmask: bit 0 = North (−Z), bit 1 = East (+X), bit 2 = South (+Z), bit 3 = West (−X)
  *
@@ -232,7 +238,7 @@ function castHorizontal(
  * @param walkable Walkable grid for this floor level
  * @param floorY Y position of the floor
  * @param sceneMin Scene bounding box minimum (THREE.Vector3)
- * @param config MinimapConfig (wallScanHeight, wallNormalThreshold, wallRayLength, gridSize)
+ * @param config MinimapConfig (wallScanHeight, wallNormalThreshold, gridSize)
  * @param onProgress Called with progress in [0, 1]
  * @returns 2D grid of wall bitmasks (same dimensions as walkable)
  */
@@ -245,7 +251,8 @@ async function buildWallGrid(
     onProgress: (progress: number) => void,
     yielder: BuildYielder,
 ): Promise<number[][]> {
-    const { gridSize, wallScanHeight, wallNormalThreshold, wallRayLength } = config;
+    const { gridSize, wallScanHeight, wallNormalThreshold } = config;
+    const wallRayLength = WALL_RAY_CELLS * gridSize;
     const rows = walkable.length;
     const cols = walkable[0]?.length ?? 0;
 
@@ -1363,7 +1370,7 @@ async function runBuildSteps(
             p => onProgress(0.75 + ((level.id + p) / levels.length) * 0.15, wallLabel),
             yielder,
         );
-        level.walls = filterWallClusters(level.walls, 3);
+        level.walls = filterWallClusters(level.walls, Math.max(1, Math.ceil(MIN_WALL_LENGTH / gridSize)));
         const wallCount = level.walls.flat().filter(v => v !== 0).length;
         console.log(`    Floor ${level.id}: ${wallCount} cells with wall(s)`);
         console.timeEnd(`    floor ${level.id}`);

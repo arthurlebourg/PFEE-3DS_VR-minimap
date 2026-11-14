@@ -39,9 +39,10 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'histoHeightSize', category: 'floors', label: 'Histogram slice', min: 0.02, max: 0.5, step: 0.01 },
     { key: 'minPeakArea', category: 'floors', label: 'Min peak area', min: 0.5, max: 20, step: 0.5 },
     { key: 'floorOpeningRadius', category: 'floors', label: 'Opening radius', min: 0, max: 5, step: 1 },
-    { key: 'wallScanHeight', category: 'walls', label: 'Wall scan height', min: 0.1, max: 3.0, step: 0.05 },
-    { key: 'wallNormalThreshold', category: 'walls', label: 'Wall normal thr.', min: 0.05, max: 0.9, step: 0.05 },
-    { key: 'wallRayLength', category: 'walls', label: 'Wall ray length', min: 0.05, max: 1.0, step: 0.05 },
+    // Under 1.0 m furniture becomes walls, over 1.8 m door lintels close the doors
+    { key: 'wallScanHeight', category: 'walls', label: 'Wall scan height', min: 1.0, max: 1.8, step: 0.05 },
+    // Only matters for tilted or curved walls: too low misses them, too high takes seats and slopes for walls
+    { key: 'wallNormalThreshold', category: 'walls', label: 'Wall normal thr.', min: 0.2, max: 0.4, step: 0.05 },
     { key: 'minStairArea', category: 'stairs', label: 'Min stair area', min: 0.05, max: 5, step: 0.05 },
     { key: 'maxStairArea', category: 'stairs', label: 'Max stair area', min: 1, max: 30, step: 0.5 },
     { key: 'maxSlopeDeg', category: 'stairs', label: 'Stair max slope (°)', min: 20, max: 85, step: 1 },
