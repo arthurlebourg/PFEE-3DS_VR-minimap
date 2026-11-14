@@ -32,6 +32,13 @@ export function createFloorManager(initialIdx = 0): FloorManagerState {
     };
 }
 
+/**
+ * Returns the currently targeted floor index (preview floor while trigger is held, or confirmed current floor)
+ */
+export function getActiveFloorIdx(state: FloorManagerState): number {
+    return state.triggerHeld ? state.prevFloorIdx : state.curFloorIdx;
+}
+
 export function updateFloorManager(
     state: FloorManagerState,
     map: SceneMap,

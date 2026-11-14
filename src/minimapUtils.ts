@@ -13,12 +13,10 @@ export function buildWalkableGrid(
     allHits: { r: number; c: number; y: number }[],
     targetY: number,
     thr: number,
-    minCells : number,
+    _minCells: number,
     rows: number,
     cols: number,
 ): { walkable: boolean[][]; bestComponent: [number, number][] } {
-
-    const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
     // graph representing the potential floor
     const raw: boolean[][] = Array.from({ length: rows }, () => new Array(cols).fill(false));

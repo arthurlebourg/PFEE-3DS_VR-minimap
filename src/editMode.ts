@@ -60,7 +60,7 @@ export type ConfigRow =
     | { kind: 'category'; category: ParamCategory; label: string; count: number }
     | { kind: 'param'; param: EditableParam };
 
-export type EditPanel = 'config' | 'floors';
+export type EditPanel = 'config' | 'floors' | 'minimap3d';
 
 /**
  * @typedef EditModeState
