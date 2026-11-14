@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WALL_N, WALL_E, WALL_S, WALL_W, type SceneMap, type FloorLevel } from './minimap.js';
+import { WALL_N, WALL_E, WALL_S, WALL_W, type SceneMap, type FloorLevel, type StairConnector } from './minimap.js';
 import { NO_ROOM } from './roomSegmentation.js';
 
 /**
@@ -51,6 +51,10 @@ export interface Minimap3DConfig {
     wireOpacity: number;
     /** Slab and wall color of the rooms next to the player's (roomAndNeighbours mode) */
     neighbourColor: number;
+    /** Stairs of the active floor: going up from it, going down from it, dead-ended climb */
+    stairUpColor: number;
+    stairDownColor: number;
+    stairUnknownColor: number;
 }
 
 export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
@@ -72,7 +76,19 @@ export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
     wireColor: 0x7fe8ff,
     wireOpacity: 0.45,
     neighbourColor: 0x2f7fd0,
+    stairUpColor: 0xffb43c,
+    stairDownColor: 0xff783c,
+    stairUnknownColor: 0x969696,
 };
+
+// Stair direction arrow size (maquette metres) and its gap above the flight
+const STAIR_ARROW_RADIUS = 0.0022;
+const STAIR_ARROW_HEIGHT = 0.0055;
+const STAIR_ARROW_GAP = 0.002;
+// Shade of a stair block's sides relative to its top, so the steps read without lighting
+const STAIR_SIDE_SHADE = 0.6;
+// Shade of the deepest tile of a flight going down, relative to its top: it reads as sinking away
+const STAIR_DEEP_SHADE = 0.45;
 
 export type UpperFloorsMode = 'dim' | 'hide';
 
@@ -321,6 +337,81 @@ export function buildFloorWireframeGeometry(
     return geo;
 }
 
+/** Where a stair connector leads from a floor, null if it doesn't touch it */
+type StairDirection = 'up' | 'down' | 'unknown';
+
+function stairDirection(connector: StairConnector, floorId: number): StairDirection | null {
+    if (connector.fromFloorId === floorId) return connector.resolved ? 'up' : 'unknown';
+    if (connector.toFloorId === floorId) return 'down';
+    return null;
+}
+
+/**
+ * Stair connector as seen from one of its floors. Climbing from it (up or dead-ended), one block per cell from the
+ * floor to the cell's height: the flight rises above the floor. Arriving on it (down), a flat tile per cell: the flight
+ * would sink under the base, so the tiles darken with depth instead. Both stand above the floor slabs, the stair cells
+ * often being walkable floor cells too
+ * @param rises true for a climb from this floor
+ * @param color top face color (of the top tile when going down), the sides are darker
+ */
+export function buildStairGeometry(
+    connector: StairConnector,
+    floorY: number,
+    sceneBounds: { sceneMinX: number; sceneMinZ: number },
+    gridSize: number,
+    slabHeight: number,
+    rises: boolean,
+    color: THREE.Color
+): THREE.BufferGeometry {
+    const { sceneMinX, sceneMinZ } = sceneBounds;
+    const tops = new Map<string, number>();
+    const depths = new Map<string, number>();
+    for (const { r, c, y } of connector.cells) {
+        const rise = rises ? Math.max(y - floorY, slabHeight) : 0;
+        tops.set(`${r} ${c}`, floorY + rise + 2 * slabHeight);
+        depths.set(`${r} ${c}`, Math.max(floorY - y, 0));
+    }
+    const maxDepth = rises ? 0 : Math.max(...depths.values());
+
+    const sideColor = color.clone().multiplyScalar(STAIR_SIDE_SHADE);
+    const topColor = new THREE.Color();
+    const pos: number[] = [], norm: number[] = [], col: number[] = [], idx: number[] = [];
+    const quad = (p0: number[], p1: number[], p2: number[], p3: number[], n: [number, number, number], quadColor: THREE.Color) => {
+        pushQuad(pos, norm, idx, p0, p1, p2, p3, n);
+        for (let i = 0; i < 4; i++) col.push(quadColor.r, quadColor.g, quadColor.b);
+    };
+
+    for (const [key, yTop] of tops) {
+        const [r, c] = key.split(' ').map(Number);
+        const x0 = sceneMinX + c * gridSize, x1 = x0 + gridSize;
+        const z0 = sceneMinZ + r * gridSize, z1 = z0 + gridSize;
+        const shade = maxDepth > 0 ? 1 - (1 - STAIR_DEEP_SHADE) * depths.get(key)! / maxDepth : 1;
+        quad([x0, yTop, z0], [x1, yTop, z0], [x1, yTop, z1], [x0, yTop, z1], [0, 1, 0], topColor.copy(color).multiplyScalar(shade));
+
+        // Sides only where the neighbour is lower or not a stair cell: the risers and the flight's outline
+        const sides: [dr: number, dc: number, a: number[], b: number[], n: [number, number, number]][] = [
+            [-1, 0, [x0, z0], [x1, z0], [0, 0, -1]],
+            [0, 1, [x1, z0], [x1, z1], [1, 0, 0]],
+            [1, 0, [x1, z1], [x0, z1], [0, 0, 1]],
+            [0, -1, [x0, z1], [x0, z0], [-1, 0, 0]],
+        ];
+        for (const [dr, dc, [ax, az], [bx, bz], n] of sides) {
+            const yBot = Math.max(floorY, tops.get(`${r + dr} ${c + dc}`) ?? floorY);
+            if (yBot >= yTop) continue;
+            quad([ax, yBot, az], [bx, yBot, bz], [bx, yTop, bz], [ax, yTop, az], n, sideColor);
+        }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    if (pos.length > 0) {
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+        geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+        geo.setIndex(idx);
+    }
+    return geo;
+}
+
 /** Room of the cell under (x, z), or of the nearest room cell within ROOM_SEARCH_CELLS. NO_ROOM if none */
 function roomAt(level: FloorLevel, sceneBounds: { sceneMinX: number; sceneMinZ: number }, gridSize: number, x: number, z: number): number {
     if (!level.roomIds?.length) return NO_ROOM;
@@ -488,7 +579,14 @@ export function createVRMinimap3D(
     const roomWallMat = new THREE.MeshBasicMaterial({ color: config.wallColor, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
     const neighbourSlabMat = new THREE.MeshBasicMaterial({ color: config.neighbourColor, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
     const neighbourWallMat = new THREE.MeshBasicMaterial({ color: config.neighbourColor, transparent: true, opacity: 0.3, side: THREE.DoubleSide });
-    const sharedMaterials = [slabMat, previewSlabMat, wallMat, edgeMat, previewEdgeMat, wireMat, roomSlabMat, roomWallMat, neighbourSlabMat, neighbourWallMat];
+    const stairMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.95, side: THREE.DoubleSide });
+    const stairColors: Record<StairDirection, number> = { up: config.stairUpColor, down: config.stairDownColor, unknown: config.stairUnknownColor };
+    // White: a stair-colored arrow over a flight going down, seen from above, is lost in it
+    const stairArrowMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const sharedMaterials = [
+        slabMat, previewSlabMat, wallMat, edgeMat, previewEdgeMat, wireMat, roomSlabMat, roomWallMat, neighbourSlabMat, neighbourWallMat,
+        stairMat, stairArrowMat,
+    ];
 
     let dynamicDisposables: (THREE.BufferGeometry | THREE.Material)[] = [];
     let floors: Floor3D[] = [];
@@ -545,6 +643,44 @@ export function createVRMinimap3D(
             }
         }
         floor.group.add(roomHighlight);
+    }
+
+    /**
+     * Stairs of a floor, shown in every display mode: the flights and an arrow above each one pointing where it leads
+     * (none for a dead-ended climb)
+     */
+    function buildFloorStairs(sceneMap: SceneMap, level: FloorLevel): THREE.Group {
+        const group = new THREE.Group();
+        const arrowGeos = {
+            up: new THREE.ConeGeometry(STAIR_ARROW_RADIUS / scaleFactor, STAIR_ARROW_HEIGHT / scaleFactor, 12),
+            down: new THREE.ConeGeometry(STAIR_ARROW_RADIUS / scaleFactor, STAIR_ARROW_HEIGHT / scaleFactor, 12).rotateX(Math.PI),
+        };
+        dynamicDisposables.push(arrowGeos.up, arrowGeos.down);
+        const arrowHalf = STAIR_ARROW_HEIGHT / scaleFactor / 2;
+        const arrowGap = STAIR_ARROW_GAP / scaleFactor;
+
+        for (const connector of sceneMap.connectors ?? []) {
+            const direction = stairDirection(connector, level.id);
+            if (!direction || connector.cells.length === 0) continue;
+            const rises = direction !== 'down';
+            const geo = buildStairGeometry(
+                connector, level.floorY, sceneMap.sceneBounds, sceneMap.gridSize, config.slabHeight, rises, new THREE.Color(stairColors[direction]),
+            );
+            dynamicDisposables.push(geo);
+            if (!geo.attributes.position) continue;
+            const flight = new THREE.Mesh(geo, stairMat);
+            flight.renderOrder = 8;
+            group.add(flight);
+
+            if (direction === 'unknown') continue;
+            geo.computeBoundingBox();
+            const { min, max } = geo.boundingBox!;
+            const arrow = new THREE.Mesh(arrowGeos[direction], stairArrowMat);
+            arrow.position.set((min.x + max.x) / 2, max.y + arrowGap + arrowHalf, (min.z + max.z) / 2);
+            arrow.renderOrder = 8;
+            group.add(arrow);
+        }
+        return group;
     }
 
     function buildModel(sceneMap: SceneMap) {
@@ -607,6 +743,8 @@ export function createVRMinimap3D(
                 wireMesh.renderOrder = 3;
                 floorGroup.add(wireMesh);
             }
+
+            floorGroup.add(buildFloorStairs(sceneMap, level));
 
             buildingContainer.add(floorGroup);
             floors.push({ id: level.id, floorY: level.floorY, ceilingY: level.ceilingY, group: floorGroup, slabsMesh: slabMesh, wallsMesh: wallMesh, wallEdgesMesh, wireMesh });
