@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { CACHE_VERSION, type SceneMap, type FloorLevel, type MinimapConfig, type StairConnector } from './minimap.js';
-import { buildWalkableGrid, pickSpawn, openingByReconstruction, largestComponent } from './minimapUtils.js';
+import { buildWalkableGrid, pickSpawn, openingByReconstruction, largestComponent, type SurfaceAt } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
 
 // Globbing grid size = gridSize * factor
@@ -19,6 +19,9 @@ const WALL_RAY_CELLS = 1.25;
 
 // Wall fragments shorter than this (m) are removed: isolated specks, not walls
 const MIN_WALL_LENGTH = 0.2;
+
+// Free height (m) needed above a spawn point: a standing person, with some margin
+const MIN_SPAWN_HEADROOM = 2.0;
 
 // A real stair riser (m): a step change between two cells, whatever the grid size. On a fine grid it's taller than the
 // slope limit over one cell (0.17 m at 0.1 m and 60°), which would stop the flood at every step
@@ -1276,6 +1279,45 @@ async function runBuildSteps(
 
     const rawLevels: FloorLevel[] = [];
 
+    // Upward surfaces per cell, to place the spawn points on the floor surface, with room above
+    const cellHits = new Map<number, number[]>();
+    for (const { r, c, y } of allHits) {
+        const ys = cellHits.get(r * cols + c);
+        if (ys) ys.push(y); else cellHits.set(r * cols + c, [y]);
+    }
+    // The upward surfaces miss what is tilted or faces down (seat, grating, inverted normals): a ray up and a ray down
+    // over the needed height check the cell too, as a ray only hits the faces turned towards it
+    const spawnRaycaster = new THREE.Raycaster();
+    spawnRaycaster.far = MIN_SPAWN_HEADROOM - voxYThr;
+    spawnRaycaster.firstHitOnly = true;
+    const up = new THREE.Vector3(0, 1, 0);
+    const down = new THREE.Vector3(0, -1, 0);
+    const rayOrigin = new THREE.Vector3();
+    const freeAbove = (r: number, c: number, y: number): number => {
+        const x = min.x + (c + 0.5) * gridSize, z = min.z + (r + 0.5) * gridSize;
+        let free = Infinity;
+        spawnRaycaster.set(rayOrigin.set(x, y + voxYThr, z), up);
+        const upHit = intersectTargets(spawnRaycaster, targets)[0];
+        if (upHit) free = upHit.distance + voxYThr;
+        spawnRaycaster.set(rayOrigin.set(x, y + MIN_SPAWN_HEADROOM, z), down);
+        const downHit = intersectTargets(spawnRaycaster, targets)[0];
+        if (downHit) free = Math.min(free, MIN_SPAWN_HEADROOM - downHit.distance);
+        return free;
+    };
+    const surfaceNear = (floorY: number): SurfaceAt => (r, c) => {
+        const ys = cellHits.get(r * cols + c);
+        if (!ys) return undefined;
+        let surfaceY: number | undefined;
+        for (const y of ys) {
+            if (Math.abs(y - floorY) <= voxYThr && (surfaceY === undefined || Math.abs(y - floorY) < Math.abs(surfaceY - floorY))) surfaceY = y;
+        }
+        if (surfaceY === undefined) return undefined;
+        // a surface within the floor's band above it (rug, threshold) is not in the way
+        let above = Infinity;
+        for (const y of ys) if (y > surfaceY + voxYThr && y < above) above = y;
+        return { surfaceY, headroom: Math.min(above - surfaceY, freeAbove(r, c, surfaceY)) };
+    };
+
     // Assign each hit to its nearest peak
     const hitPeakIndex = allHits.map(hit => {
         let best = -1;
@@ -1334,7 +1376,7 @@ async function runBuildSteps(
         const tMinZ = min.z + rMin * gridSize;
         const tMaxZ = min.z + (rMax + 1) * gridSize;
 
-        const spawnPoint = pickSpawn(bestComponent, peak.centerY, min.x, min.z, gridSize);
+        const spawnPoint = pickSpawn(bestComponent, peak.centerY, min.x, min.z, gridSize, surfaceNear(peak.centerY), MIN_SPAWN_HEADROOM);
         const walkableCount = walkable.flat().filter(Boolean).length;
         const rawCount = rawWalkable.flat().filter(Boolean).length;
 

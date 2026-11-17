@@ -9,6 +9,7 @@ import {
     type SceneMap, type MinimapConfig, type FloorLevel,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager, getActiveFloorIdx } from './floorManager.js';
+import { SPAWN_ABOVE_FLOOR } from './minimapUtils.js';
 import { createVRMinimap3D, MINIMAP_DISPLAY_MODES, type VRMinimap3D } from './minimap3D.ts';
 import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
@@ -415,7 +416,7 @@ function trySpawn(): void {
 
     const level = currentLevel();
     if (level) {
-        placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
+        placePlayerOnFloor(player, camera, level.spawnPoint.x, level.spawnPoint.y - SPAWN_ABOVE_FLOOR, level.spawnPoint.z);
         spawnIsProvisional = false;
     } else {
         const center = modelBounds.getCenter(new THREE.Vector3());

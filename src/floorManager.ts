@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import type { SceneMap } from './minimap.js';
 import { placePlayerOnFloor } from './player.js';
+import { SPAWN_ABOVE_FLOOR } from './minimapUtils.js';
 
 // trigger value in [0,1]
 const TRIGGER_THRESHOLD = 0.5;
@@ -82,7 +83,7 @@ export function updateFloorManager(
         if (state.dir !== 0 && target >= 0 && target < map.levels.length) {
             state.curFloorIdx = target;
             const level = map.levels[target];
-            placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
+            placePlayerOnFloor(player, camera, level.spawnPoint.x, level.spawnPoint.y - SPAWN_ABOVE_FLOOR, level.spawnPoint.z);
 
             // avoid spamming command
             state.isCoolingDown = true;
