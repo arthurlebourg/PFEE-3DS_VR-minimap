@@ -9,6 +9,7 @@ import {
     type SceneMap, type MinimapConfig, type FloorLevel,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager, getActiveFloorIdx } from './floorManager.js';
+import { SPAWN_ABOVE_FLOOR } from './minimapUtils.js';
 import { createVRMinimap3D, MINIMAP_DISPLAY_MODES, type VRMinimap3D } from './minimap3D.ts';
 import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
@@ -48,10 +49,10 @@ scene.add(dirLight);
 
 const defaultConfig: MinimapConfig = {
     gridSize: 0.1,
-    minWalkableArea: 1.0,
+    minWalkableArea: 3.0, // m², a floor smaller than this is noise (tank top, roof bump)
     normalThreshold: 0.7,
     voxYThr: 0.15,
-    minFloorGap: 0.4,
+    minFloorGap: 1.5, // m, surfaces closer than this above a floor (furniture, landings, raised parts) are part of it: no one stands under 1.5 m
     histoHeightSize: 0.15,
     minPeakArea: 2,
     floorOpeningRadius: 5, // cells, opening by reconstruction: areas with nothing wider than this disk are noise and removed (0 = off)
@@ -61,9 +62,9 @@ const defaultConfig: MinimapConfig = {
     // Ground variation connectors
     minStairArea: 0.15, // m², filters out single-cell raycast noise
     maxStairArea: 30, // m², > treat as sub-level, not staircase. Also holds the flat floor around the seed (see maxLandingRun)
-    maxSlopeDeg: 60, // °, steepest slope a stair flood climbs: max Y rise per cell = gridSize * tan(maxSlopeDeg)
+    maxSlopeDeg: 60, // °, steepest slope a stair flood climbs: max Y rise per cell = gridSize * tan(maxSlopeDeg), or a 0.25 m riser
     stairFlatTolerance: 0.03, // m, |deltaY| under this still counts as a flat step (keep it well under the max rise per cell)
-    maxLandingRun: 1.2, // m, max consecutive flat run before considering that's a dead end
+    maxLandingRun: 2.0, // m, max consecutive flat run before considering that's a dead end: across the landing of a U-shaped staircase
     // Room segmentation
     doorWidth: 1.0, // openings narrower than this (m) split two rooms
     minRoomArea: 1.5, // rooms smaller than this (m²) are merged into a neighbour
@@ -415,7 +416,7 @@ function trySpawn(): void {
 
     const level = currentLevel();
     if (level) {
-        placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
+        placePlayerOnFloor(player, camera, level.spawnPoint.x, level.spawnPoint.y - SPAWN_ABOVE_FLOOR, level.spawnPoint.z);
         spawnIsProvisional = false;
     } else {
         const center = modelBounds.getCenter(new THREE.Vector3());

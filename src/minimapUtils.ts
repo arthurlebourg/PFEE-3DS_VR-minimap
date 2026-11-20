@@ -157,14 +157,26 @@ export function openingByReconstruction(walkable: boolean[][], radius: number): 
     return result;
 }
 
+// Height (m) of the spawn point above the floor surface
+export const SPAWN_ABOVE_FLOOR = 0.5;
+
+// Cells checked at most for a spawn point (each one may cost rays)
+const MAX_SPAWN_CANDIDATES = 2000;
+
+/** Floor surface height in a cell and free height above it (to the next surface) */
+export type SurfaceAt = (r: number, c: number) => { surfaceY: number; headroom: number } | undefined;
+
 /**
- * Select a spawn point
- * 
+ * Select a spawn point: near the middle of the floor's largest area, away from its edge, where a person can stand.
+ * Its y is the floor surface there (+ SPAWN_ABOVE_FLOOR): the floor's Y is a histogram slice centre, a few cm off
+ *
  * @param bestComponent Largest surface of the floor
  * @param floorY Y position of the floor
  * @param minX Minimum X of the scene
  * @param minZ Minimum Z of the scene
  * @param gridSize Size of the floor grid
+ * @param surfaceAt Floor surface and free height above it in a cell, undefined if unknown
+ * @param minHeadroom Free height (m) needed above the spawn: under a seat, a table or a deck, the head would go through
  * @return Coordinates of the spawn
  */
 export function pickSpawn(
@@ -172,14 +184,38 @@ export function pickSpawn(
     floorY: number,
     minX: number,
     minZ: number,
-    gridSize: number
+    gridSize: number,
+    surfaceAt: SurfaceAt = () => undefined,
+    minHeadroom = 0,
 ): { x: number; y: number; z: number } {
-    const mid = bestComponent[Math.floor(bestComponent.length / 2)];
-    return mid
-        ? {
-            x: minX + (mid[1] + 0.5) * gridSize,
-            y: floorY + 0.5,  // spawn a bit above the floor
-            z: minZ + (mid[0] + 0.5) * gridSize,
+    if (bestComponent.length === 0) return { x: minX, y: floorY + SPAWN_ABOVE_FLOOR, z: minZ };
+
+    const inComponent = new Set(bestComponent.map(([r, c]) => `${r}_${c}`));
+    const isInterior = (r: number, c: number) => [[-1, 0], [1, 0], [0, -1], [0, 1]]
+        .every(([dr, dc]) => inComponent.has(`${r + dr}_${c + dc}`));
+
+    // From the middle of the list outwards: the first interior cell with room enough above.
+    // None among the candidates: the one with the most room
+    const mid = Math.floor(bestComponent.length / 2);
+    let chosen = bestComponent[mid];
+    let chosenHeadroom = -Infinity;
+    let candidates = 0;
+    for (let i = 0; i < 2 * bestComponent.length && candidates < MAX_SPAWN_CANDIDATES; i++) {
+        const cell = bestComponent[mid + (i % 2 === 1 ? (i + 1) / 2 : -i / 2)];
+        if (!cell || !isInterior(cell[0], cell[1])) continue;
+        candidates++;
+        const headroom = surfaceAt(cell[0], cell[1])?.headroom ?? Infinity;
+        if (headroom > chosenHeadroom) {
+            chosen = cell;
+            chosenHeadroom = headroom;
         }
-        : { x: minX, y: floorY + 0.5, z: minZ };
+        if (headroom >= minHeadroom) break;
+    }
+
+    const [r, c] = chosen;
+    return {
+        x: minX + (c + 0.5) * gridSize,
+        y: (surfaceAt(r, c)?.surfaceY ?? floorY) + SPAWN_ABOVE_FLOOR,
+        z: minZ + (r + 0.5) * gridSize,
+    };
 }
