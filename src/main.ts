@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { loadGLB } from './glbLoader.js';
+import { loadGLB, MODEL_UNITS } from './glbLoader.js';
+import { detectModelScale } from './unitDetection.js';
 import { createPlayer, updateMovement, placePlayerOnFloor } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
@@ -76,6 +77,35 @@ const defaultConfig: MinimapConfig = {
 const MB = 1024 * 1024;
 const startScreen = createStartScreen();
 
+/**
+ * Scale of the model's raw coordinates: a loaded map keeps the one it was built at, otherwise the unit picked
+ * on the start screen, or the auto-scale corrected from the model's storey height
+ * @param model loaded model, at its auto-scale
+ */
+async function chooseModelScale(selection: StartSelection, model: THREE.Group, autoScale: number, map: SceneMap | null): Promise<number> {
+    if (map) return map.modelScale ?? autoScale;
+
+    const forced = MODEL_UNITS.find(u => u.unit === selection.unit);
+    if (forced) {
+        console.log(`Model unit: ${forced.unit} (start screen), scale = ${forced.scale}`);
+        return forced.scale;
+    }
+
+    try {
+        const label = 'Détection de l\'unité du modèle…';
+        startScreen.setProgress(null, label);
+        const detection = await detectModelScale(model, autoScale, defaultConfig.normalThreshold, p => startScreen.setProgress(p, label));
+        console.log(
+            `Model unit: ${detection.unit ?? 'power of 10'}, scale = ${detection.scale} (auto-scale ${autoScale}, `
+            + `${detection.levels} floor levels, storey ${detection.storeyHeight?.toFixed(2) ?? '-'} m, ${detection.rays} rays)`,
+        );
+        return detection.scale;
+    } catch (e) {
+        console.warn('Model unit detection failed, keeping the auto-scale:', e);
+        return autoScale;
+    }
+}
+
 async function loadSelection(): Promise<{
     selection: StartSelection;
     model: THREE.Group;
@@ -86,7 +116,7 @@ async function loadSelection(): Promise<{
         const selection = await startScreen.waitForSelection();
         try {
             startScreen.setProgress(0, 'Téléchargement du modèle…');
-            const { model, sha1 } = await loadGLB(`/models/${encodeURIComponent(selection.modelFile)}`, (loaded, total) => {
+            const { model, sha1, autoScale } = await loadGLB(`/models/${encodeURIComponent(selection.modelFile)}`, (loaded, total) => {
                 if (total === 0) startScreen.setProgress(null, `Téléchargement du modèle… ${(loaded / MB).toFixed(0)} Mo`);
                 else if (loaded < total) startScreen.setProgress(loaded / total, `Téléchargement du modèle… ${(loaded / MB).toFixed(0)} / ${(total / MB).toFixed(0)} Mo`);
                 else startScreen.setProgress(null, 'Préparation du modèle…');
@@ -98,6 +128,8 @@ async function loadSelection(): Promise<{
                 map = await loadSceneMapFromFile(`/maps/${encodeURIComponent(selection.mapFile)}`, sha1);
                 if (!map) console.warn(`SceneMap: ${selection.mapFile} couldn't be loaded, building the map instead`);
             }
+            model.scale.setScalar(await chooseModelScale(selection, model, autoScale, map));
+            model.updateMatrixWorld(true);
             return { selection, model, modelSha1: sha1, map };
         } catch (e) {
             startScreen.showError(`Échec du chargement de ${selection.modelFile} : ${e instanceof Error ? e.message : e}`);
@@ -231,6 +263,7 @@ async function rebuildMinimap(): Promise<void> {
             },
         );
         built.map.modelSha1 = modelSha1;
+        built.map.modelScale = model.scale.x;
         applyMap(built.map, built.histogram);
     } catch (e) {
         if (controller.signal.aborted) return; // restarted or cancelled

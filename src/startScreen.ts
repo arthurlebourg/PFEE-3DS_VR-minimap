@@ -1,3 +1,5 @@
+import { MODEL_UNITS, type ModelUnit } from './glbLoader.js';
+
 // Catalog served by the dev server (vitePlugins/assetCatalog.ts)
 
 export interface CatalogModel {
@@ -30,11 +32,13 @@ interface Catalog {
  * @prop modelFile file in models/
  * @prop mapFile file in maps/, null = build the map in the scene
  * @prop autoBuild without a map: start building right away (false = open the edit mode first)
+ * @prop unit unit of the model's coordinates, used without a map (a map keeps the scale it was built at)
  */
 export interface StartSelection {
     modelFile: string;
     mapFile: string | null;
     autoBuild: boolean;
+    unit: ModelUnit;
 }
 
 export interface StartScreen {
@@ -48,6 +52,10 @@ export interface StartScreen {
 }
 
 const STORAGE_KEY = 'vr-minimap:start-selection';
+// Unit picked for each model file
+const UNITS_STORAGE_KEY = 'vr-minimap:model-units';
+
+const UNIT_OPTIONS: { unit: ModelUnit; label: string }[] = [{ unit: 'auto', label: 'Auto' }, ...MODEL_UNITS];
 
 function modelBaseName(file: string): string {
     return file.replace(/\.glb$/i, '');
@@ -76,6 +84,23 @@ function storeSelection(selection: StartSelection): void {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(selection));
     } catch {
         // storage unavailable (private mode...): the selection just isn't remembered
+    }
+}
+
+function loadStoredUnits(): Record<string, ModelUnit> {
+    try {
+        const stored = JSON.parse(localStorage.getItem(UNITS_STORAGE_KEY) ?? '{}') as Record<string, unknown>;
+        return Object.fromEntries(Object.entries(stored).filter(([, unit]) => UNIT_OPTIONS.some(o => o.unit === unit))) as Record<string, ModelUnit>;
+    } catch {
+        return {};
+    }
+}
+
+function storeUnits(units: Record<string, ModelUnit>): void {
+    try {
+        localStorage.setItem(UNITS_STORAGE_KEY, JSON.stringify(units));
+    } catch {
+        // storage unavailable: the units just aren't remembered
     }
 }
 
@@ -114,6 +139,8 @@ const STYLE = `
 .ss-option-body { flex: 1; min-width: 0; }
 .ss-option-name { font-weight: 600; overflow-wrap: anywhere; }
 .ss-option-meta { color: #9aa0aa; font-size: 14px; }
+.ss-units { display: flex; flex-wrap: wrap; gap: 8px; }
+.ss-units .ss-option { min-height: 48px; padding: 8px 16px; }
 .ss-badge { flex: none; padding: 2px 10px; border-radius: 999px; background: #2b3040; color: #c9d3ff; font-size: 13px; }
 .ss-check { display: flex; align-items: flex-start; gap: 12px; margin-top: 12px; padding: 12px 16px; border-radius: 10px;
     background: #161a23; cursor: pointer; }
@@ -156,6 +183,7 @@ export function createStartScreen(): StartScreen {
     let modelFile: string | null = stored.modelFile ?? null;
     let mapFile: string | null = stored.mapFile ?? null;
     let autoBuild = stored.autoBuild ?? true;
+    const units = loadStoredUnits();
     let resolveSelection: ((selection: StartSelection) => void) | null = null;
 
     // loading view, built on the first setProgress
@@ -321,13 +349,36 @@ export function createStartScreen(): StartScreen {
         mapSection.appendChild(saveHint);
         card.appendChild(mapSection);
 
+        // 3. Unit, without a map only: a map keeps the scale it was built at
+        if (mapFile === null) {
+            const file = modelFile!;
+            const unitSection = el('section', 'ss-section');
+            const unitHead = el('div', 'ss-section-head');
+            unitHead.appendChild(el('h2', 'ss-section-title', '3. Unité du modèle'));
+            unitSection.appendChild(unitHead);
+
+            const unitList = el('div', 'ss-units');
+            unitList.setAttribute('role', 'radiogroup');
+            for (const { unit, label } of UNIT_OPTIONS) {
+                const option = radioOption('ss-unit', unit, unit === (units[file] ?? 'auto'), () => { units[file] = unit; renderSelection(); });
+                option.body.appendChild(el('div', 'ss-option-name', label));
+                unitList.appendChild(option.label);
+            }
+            unitSection.append(
+                unitList,
+                el('p', 'ss-hint', 'Auto : l\'échelle est devinée à partir de la taille du modèle, puis de la hauteur de ses étages (modèles en pouces ou en pieds). Force l\'unité si les étages paraissent trop hauts ou trop bas.'),
+            );
+            card.appendChild(unitSection);
+        }
+
         const launchBtn = el('button', 'ss-button ss-launch', 'Lancer ▶');
         launchBtn.type = 'button';
         launchBtn.disabled = resolveSelection === null;
         launchBtn.addEventListener('click', () => {
             if (!resolveSelection || !modelFile) return;
-            const selection: StartSelection = { modelFile, mapFile, autoBuild };
+            const selection: StartSelection = { modelFile, mapFile, autoBuild, unit: units[modelFile] ?? 'auto' };
             storeSelection(selection);
+            storeUnits(units);
             const resolve = resolveSelection;
             resolveSelection = null;
             errorMessage = null;
