@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { EditModeState, EditPanel } from './editMode.js';
+import { isActionFlashing, type ConfigAction, type EditModeState, type EditPanel } from './editMode.js';
 import { HUD_RENDER_ORDER } from './minimap.js';
 import { EDITABLE_PARAMS, PARAM_CATEGORIES, type ParamCategory, getConfigRows, getRebuildAction, resetToDefaults, toggleCategory } from './editMode.js';
 import {
@@ -595,31 +595,39 @@ export function renderConfigPanel(
 const CATEGORY_ROW_H = 20;
 const PARAM_ROW_H = 22;
 const ACTION_ROW_H = 30;
-// How long the save button reads "saved" after a save
-const SAVED_FEEDBACK_MS = 2000;
 
-/** Save button of the VR config list, below the categories: greyed without a map, "saved" for a moment after a save */
-function drawSaveButton(
-    ctx: CanvasRenderingContext2D, state: EditModeState, map: MapContext,
-    y: number, h: number, canvasSize: number, isSelected: boolean,
+/**
+ * Button of a VR panel (config list's reset / save, floors panel's cancel): greyed when there's nothing to do,
+ * green with its "done" label for a moment after being pressed
+ */
+function drawPanelButton(
+    ctx: CanvasRenderingContext2D, label: string, y: number, h: number, canvasSize: number,
+    { enabled, selected, done }: { enabled: boolean; selected: boolean; done: boolean },
 ): void {
-    const enabled = map.levelCount > 0;
-    const justSaved = state.lastSavedAt > 0 && performance.now() - state.lastSavedAt < SAVED_FEEDBACK_MS;
-    const x = 12, w = canvasSize - 24, top = y + 5, height = h - 8;
+    const x = 12, w = canvasSize - 24, top = y + 4, height = h - 6;
 
-    ctx.fillStyle = !enabled ? '#2a2a2a' : justSaved ? '#1f6b3a' : isSelected ? '#2668a6' : '#24384d';
+    ctx.fillStyle = done ? '#1f6b3a' : !enabled ? '#2a2a2a' : selected ? '#2668a6' : '#24384d';
     ctx.fillRect(x, top, w, height);
-    if (isSelected) {
+    if (selected) {
         ctx.strokeStyle = '#ffc83c';
         ctx.lineWidth = 2;
         ctx.strokeRect(x + 1, top + 1, w - 2, height - 2);
     }
 
-    ctx.fillStyle = enabled ? '#fff' : '#666';
+    ctx.fillStyle = enabled || done ? '#fff' : '#666';
     ctx.font = 'bold 12px monospace';
     ctx.textAlign = 'center';
-    const label = !enabled ? 'Aucune carte à sauvegarder' : justSaved ? 'Carte sauvegardée ✓' : 'Sauvegarder la carte';
     ctx.fillText(label, canvasSize / 2, top + height / 2 + 4);
+}
+
+/** Label and state of a button of the VR config list */
+function configActionButton(action: ConfigAction, state: EditModeState, map: MapContext): { label: string; enabled: boolean; done: boolean } {
+    const done = isActionFlashing(state, action);
+    if (action === 'reset') {
+        return { label: done ? 'Valeurs rétablies ✓' : 'Valeurs par défaut', enabled: true, done };
+    }
+    const enabled = map.levelCount > 0;
+    return { label: done ? 'Carte sauvegardée ✓' : enabled ? 'Sauvegarder la carte' : 'Aucune carte à sauvegarder', enabled, done };
 }
 
 /**
@@ -666,7 +674,8 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
         }
 
         if (row.kind === 'action') {
-            drawSaveButton(ctx, state, map, y, h, canvasSize, isSelected);
+            const { label, enabled, done } = configActionButton(row.action, state, map);
+            drawPanelButton(ctx, label, y, h, canvasSize, { enabled, selected: isSelected, done });
             return;
         }
 
@@ -710,9 +719,9 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
     if (scroll > 0) ctx.fillText('▲', canvasSize / 2, listTop + 7);
     if (scroll < contentH - viewH) ctx.fillText('▼', canvasSize / 2, listBottom - 1);
 
-    ctx.fillText('droite: ↕ sélection · clic stick ouvre/valide', canvasSize / 2, canvasSize - 48);
-    ctx.fillText('trigger+↔ ajuste · B rebuild', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('gauche: clic stick onglet · Y défauts', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('stick ↕ choisir · ↔ onglet · clic valider', canvasSize / 2, canvasSize - 48);
+    ctx.fillText('gâchette + ↔ régler · B calcul', canvasSize / 2, canvasSize - 38);
+    ctx.fillText('A : quitter l\'édition', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty || map.levelCount === 0 ? '#ff8844' : '#55ff88';
@@ -785,7 +794,7 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
         ctx.fillText(state.isRebuilding ? 'Carte en cours de calcul…' : 'Aucune carte', canvasSize / 2, canvasSize / 2 - 8);
         ctx.fillStyle = '#888';
         ctx.font = '10px monospace';
-        ctx.fillText('gauche: clic stick → config', canvasSize / 2, canvasSize / 2 + 12);
+        ctx.fillText('stick ← : onglet Config', canvasSize / 2, canvasSize / 2 + 12);
         return;
     }
 
@@ -795,7 +804,8 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
         const y = startY + rowFromTop * rowH;
         const isSelected = idx === state.floors.selectedFloorIdx;
 
-        if (isSelected) {
+        // with the cancel button selected, the floor stays the one being moved: no selection fill
+        if (isSelected && !state.floors.cancelSelected) {
             ctx.fillStyle = 'rgba(255,200,60,0.2)';
             ctx.fillRect(8, y - 4, canvasSize - 16, rowH - 4);
         }
@@ -809,7 +819,13 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
         ctx.fillText(`Y=${level.floorY.toFixed(2)}m`, canvasSize - 14, y + 12);
     });
 
-    const infoY = startY + map.levels.length * rowH + 14;
+    const cancelH = 26;
+    const pending = hasPendingPreview(state.floors);
+    const cancelDone = isActionFlashing(state, 'cancelFloorMove');
+    drawPanelButton(ctx, cancelDone ? 'Déplacement annulé ✓' : 'Annuler le déplacement', startY + map.levels.length * rowH - 4, cancelH, canvasSize,
+        { enabled: pending, selected: state.floors.cancelSelected, done: cancelDone });
+
+    const infoY = startY + map.levels.length * rowH + cancelH + 10;
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#55ddff';
@@ -826,9 +842,9 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
 
     ctx.font = '9px monospace';
     ctx.fillStyle = '#888';
-    ctx.fillText('droite: stick ↕ sélection · stick-clic axe', canvasSize / 2, canvasSize - 48);
-    ctx.fillText('trigger+stick déplace · B confirme', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('gauche: clic stick onglet · Y annule', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('stick ↕ étage · ↔ onglet · clic axe', canvasSize / 2, canvasSize - 48);
+    ctx.fillText('gâchette + stick déplace · B confirme', canvasSize / 2, canvasSize - 38);
+    ctx.fillText('A : quitter l\'édition', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = hasPendingPreview(state.floors) ? '#ff8844' : '#55ff88';

@@ -1,7 +1,7 @@
 import type { MinimapConfig } from './minimap.js';
 import {
     type FloorAdjustState, type MapContext, createFloorAdjustState,
-    selectNextFloor, toggleAxisMode, nudgeVertical, nudgeHorizontal, cancelPreview,
+    selectNextFloor, toggleAxisMode, nudgeVertical, nudgeHorizontal, cancelPreview, hasPendingPreview,
 } from './floorAdjust.js';
 
 export type ParamCategory = 'general' | 'floors' | 'walls' | 'stairs' | 'rooms';
@@ -55,7 +55,13 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'corridorMinElongation', category: 'rooms', label: 'Corridor min elong.', min: 1.5, max: 15, step: 0.5 },
 ];
 
-export type ConfigAction = 'save';
+export type ConfigAction = 'reset' | 'save';
+
+/** Buttons of the VR panels: the config list's, and the floors panel's cancel */
+export type PanelAction = ConfigAction | 'cancelFloorMove';
+
+// How long a VR panel button shows its "done" state after being pressed
+const ACTION_FLASH_MS = 2000;
 
 /** One line of the config list: a category header, a param of the open category, or a button under the categories */
 export type ConfigRow =
@@ -78,7 +84,7 @@ export type EditPanel = 'config' | 'floors' | 'minimap3d';
  * @prop buildLabel current step of the running rebuild
  * @prop isDirty config changed since the last rebuild was started
  * @prop floors floor repositioning sub-state
- * @prop lastSavedAt performance.now() of the last map save (0 = none), for the VR panel's feedback
+ * @prop actionFlash last VR panel button pressed and when (performance.now()), for its "done" feedback
  */
 export interface EditModeState {
     active: boolean;
@@ -92,7 +98,7 @@ export interface EditModeState {
     buildLabel: string;
     isDirty: boolean;
     floors: FloorAdjustState;
-    lastSavedAt: number;
+    actionFlash: { action: PanelAction; at: number } | null;
 }
 
 /**
@@ -112,7 +118,7 @@ export function createEditMode(defaults: MinimapConfig, initialConfig: MinimapCo
         buildLabel: '',
         isDirty: false,
         floors: createFloorAdjustState(),
-        lastSavedAt: 0,
+        actionFlash: null,
     };
 }
 
@@ -149,8 +155,14 @@ export function getConfigRows(state: EditModeState): ConfigRow[] {
             for (const param of params) rows.push({ kind: 'param', param });
         }
     }
+    rows.push({ kind: 'action', action: 'reset', label: 'Valeurs par défaut' });
     rows.push({ kind: 'action', action: 'save', label: 'Sauvegarder la carte' });
     return rows;
+}
+
+/** The VR panel button was pressed in the last ACTION_FLASH_MS: it shows its "done" state */
+export function isActionFlashing(state: EditModeState, action: PanelAction): boolean {
+    return state.actionFlash?.action === action && performance.now() - state.actionFlash.at < ACTION_FLASH_MS;
 }
 
 export function getSelectedRow(state: EditModeState): ConfigRow {
@@ -184,6 +196,7 @@ export function adjustParam(state: EditModeState, param: EditableParam, delta: n
 const SELECT_THRESHOLD = 0.6;
 const ADJUST_THRESHOLD = 0.15;
 const SELECT_COOLDOWN_MS = 250;
+const TAB_SWITCH_REARM = 0.3;
 const HORIZONTAL_STEP_COOLDOWN_MS = 220;
 
 function findGamepad(session: XRSession, handedness: XRHandedness): Gamepad | null {
@@ -200,27 +213,25 @@ function pressedEdge(gp: Gamepad, buttonIdx: number, prev: boolean): [fired: boo
 }
 
 /**
- * Controller input for the edit mode.
- *  Right hand — A/X toggles edit mode on/off (any panel).
- *  Left hand (only while edit mode is active):
- *    - stick click : switch panel (config <-> floors)
- *    - Y button    : contextual — reset config to defaults, or cancel the pending floor move
- *  Right hand, panel = 'config':
+ * Controller input for the edit mode, all on the right hand (the left one is for the minimap and moving).
+ *  A button             : toggles edit mode on/off (any panel)
+ *  stick left/right     : switch tab (config <-> floors), without the trigger
+ *  Panel = 'config':
  *    - stick up/down (no trigger)      : move the selection (category headers + params of the open one + buttons)
  *    - stick click                     : open/close the selected category (or the selected param's one),
- *                                        or press the selected button (save the map to a file)
+ *                                        or press the selected button (reset to defaults, save the map to a file)
  *    - stick left/right + trigger held : adjust the selected param's value, or open (→) / close (←) a selected category
- *    - B/Y button                      : rebuild the minimap (raycast), see getRebuildAction
- *  Right hand, panel = 'floors':
- *    - stick up/down (no trigger) : select the floor to reposition
- *    - stick click                : toggle axis mode (vertical Y <-> horizontal X/Z)
+ *    - B button                        : rebuild the minimap (raycast), see getRebuildAction
+ *  Panel = 'floors':
+ *    - stick up/down (no trigger) : select the floor to reposition, or the cancel button under the floors
+ *    - stick click                : toggle axis mode (vertical Y <-> horizontal X/Z), or press the cancel button
  *    - trigger + stick            : nudge the selected floor along the active axis (preview only)
- *    - B/Y button                 : confirm bake the preview offset into the map data
+ *    - B button                   : confirm bake the preview offset into the map data
  *
  * @param state edit mode state to mutate
- * @param onRebuildConfig called on right B/Y press while panel = 'config'
+ * @param onRebuildConfig called on right B press while panel = 'config'
  * @param onSaveMap called when the save button of the config panel is pressed, with a map to save
- * @param onConfirmFloorMove called on right B/Y press while panel = 'floors'
+ * @param onConfirmFloorMove called on right B press while panel = 'floors'
  * @param getMapContext returns the current floor count + grid size, needed for floor selection/nudging
  * @return update function to call every frame with the current session + deltaTime
  */
@@ -232,52 +243,61 @@ export function createEditModeInputHandler(
     getMapContext: () => MapContext,
 ): (session: XRSession | null, deltaTime: number) => void {
     let prevToggle = false;
-    let prevPanelSwitch = false;
     let prevRightB = false;
     let prevRightStickClick = false;
-    let prevLeftY = false;
+    let tabSwitchArmed = true;
     let lastSelectAt = 0;
     let lastHorizStepAt = 0;
+
+    function press(action: PanelAction, now: number): void {
+        switch (action) {
+            case 'reset':
+                resetToDefaults(state);
+                break;
+            case 'save':
+                if (getMapContext().levelCount === 0) return;
+                onSaveMap();
+                break;
+            case 'cancelFloorMove':
+                if (!hasPendingPreview(state.floors)) return;
+                cancelPreview(state.floors);
+                break;
+        }
+        state.actionFlash = { action, at: now };
+    }
 
     return (session, deltaTime) => {
         if (!session) return;
 
         const rightGp = findGamepad(session, 'right');
-        const leftGp = findGamepad(session, 'left');
+        if (!rightGp) return;
 
-        if (rightGp) {
-            const [toggled, toggleHeld] = pressedEdge(rightGp, 4, prevToggle);
-            if (toggled) state.active = !state.active;
-            prevToggle = toggleHeld;
-        }
+        const [toggled, toggleHeld] = pressedEdge(rightGp, 4, prevToggle);
+        if (toggled) state.active = !state.active;
+        prevToggle = toggleHeld;
 
         if (!state.active) {
             prevRightB = false;
             prevRightStickClick = false;
-            prevLeftY = false;
-            prevPanelSwitch = false;
+            tabSwitchArmed = true;
             return;
         }
-
-        if (leftGp) {
-            const [switchPanel, switchHeld] = pressedEdge(leftGp, 3, prevPanelSwitch);
-            if (switchPanel) state.panel = state.panel === 'config' ? 'floors' : 'config';
-            prevPanelSwitch = switchHeld;
-
-            const [secondary, secondaryHeld] = pressedEdge(leftGp, 5, prevLeftY);
-            if (secondary) {
-                if (state.panel === 'config') resetToDefaults(state);
-                else cancelPreview(state.floors);
-            }
-            prevLeftY = secondaryHeld;
-        }
-
-        if (!rightGp) return;
 
         const stickX = rightGp.axes[2] ?? 0;
         const stickY = rightGp.axes[3] ?? 0;
         const triggerHeld = (rightGp.buttons[0]?.value ?? 0) > 0.5;
         const now = performance.now();
+        // A diagonal push counts for its main direction only: switching tab while scrolling the list would be a surprise
+        const horizontal = Math.abs(stickX) > Math.abs(stickY);
+
+        // Tabs: one switch per push, the stick has to come back near the centre before the next one
+        if (!triggerHeld && horizontal && tabSwitchArmed && Math.abs(stickX) > SELECT_THRESHOLD) {
+            state.panel = stickX > 0 ? 'floors' : 'config';
+            tabSwitchArmed = false;
+        } else if (Math.abs(stickX) < TAB_SWITCH_REARM) {
+            tabSwitchArmed = true;
+        }
+        const selecting = !triggerHeld && !horizontal && Math.abs(stickY) > SELECT_THRESHOLD && now - lastSelectAt > SELECT_COOLDOWN_MS;
 
         if (state.panel === 'config') {
             state.floors.isMoving = false;
@@ -290,18 +310,12 @@ export function createEditModeInputHandler(
 
             const [stickClick, stickClickHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
             if (stickClick) {
-                if (row.kind === 'action') {
-                    if (getMapContext().levelCount > 0) {
-                        onSaveMap();
-                        state.lastSavedAt = now;
-                    }
-                } else {
-                    toggleCategory(state, row.kind === 'category' ? row.category : row.param.category);
-                }
+                if (row.kind === 'action') press(row.action, now);
+                else toggleCategory(state, row.kind === 'category' ? row.category : row.param.category);
             }
             prevRightStickClick = stickClickHeld;
 
-            if (!triggerHeld && Math.abs(stickY) > SELECT_THRESHOLD && now - lastSelectAt > SELECT_COOLDOWN_MS) {
+            if (selecting) {
                 selectNextRow(state, stickY > 0 ? 1 : -1);
                 lastSelectAt = now;
             }
@@ -314,34 +328,45 @@ export function createEditModeInputHandler(
                 adjustParam(state, param, stickX * rangeSpeed * deltaTime);
             }
         } else {
+            const floors = state.floors;
             const [confirm, confirmHeld] = pressedEdge(rightGp, 5, prevRightB);
             if (confirm) onConfirmFloorMove();
             prevRightB = confirmHeld;
 
-            const [axisToggle, axisHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
-            if (axisToggle) toggleAxisMode(state.floors);
-            prevRightStickClick = axisHeld;
+            const [stickClick, stickClickHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
+            if (stickClick) {
+                if (floors.cancelSelected) press('cancelFloorMove', now);
+                else toggleAxisMode(floors);
+            }
+            prevRightStickClick = stickClickHeld;
 
             const { levelCount, gridSize } = getMapContext();
 
-            state.floors.isMoving = triggerHeld;
+            floors.isMoving = triggerHeld;
 
-            if (!triggerHeld && Math.abs(stickY) > SELECT_THRESHOLD && now - lastSelectAt > SELECT_COOLDOWN_MS) {
-                // stick up (negative axis value) selects the next floor up
-                selectNextFloor(state.floors, levelCount, stickY < 0 ? 1 : -1);
+            if (selecting && levelCount > 0) {
+                // The panel lists the floors top floor first, the cancel button under the lowest one. No wrapping:
+                // stick up (negative axis value) goes up the list
+                if (stickY < 0) {
+                    if (floors.cancelSelected) floors.cancelSelected = false; // back on the floor being moved, its preview kept
+                    else if (floors.selectedFloorIdx < levelCount - 1) selectNextFloor(floors, levelCount, 1);
+                } else if (!floors.cancelSelected) {
+                    if (floors.selectedFloorIdx > 0) selectNextFloor(floors, levelCount, -1);
+                    else floors.cancelSelected = true;
+                }
                 lastSelectAt = now;
             }
 
             if (triggerHeld) {
-                if (state.floors.axisMode === 'vertical') {
+                if (floors.axisMode === 'vertical') {
                     if (Math.abs(stickY) > ADJUST_THRESHOLD) {
-                        nudgeVertical(state.floors, stickY, deltaTime);
+                        nudgeVertical(floors, stickY, deltaTime);
                     }
                 } else if (now - lastHorizStepAt > HORIZONTAL_STEP_COOLDOWN_MS) {
                     const dx = Math.abs(stickX) > SELECT_THRESHOLD ? Math.sign(stickX) : 0;
                     const dz = Math.abs(stickY) > SELECT_THRESHOLD ? -Math.sign(stickY) : 0;
                     if (dx !== 0 || dz !== 0) {
-                        nudgeHorizontal(state.floors, { x: dx, z: dz }, gridSize);
+                        nudgeHorizontal(floors, { x: dx, z: dz }, gridSize);
                         lastHorizStepAt = now;
                     }
                 }

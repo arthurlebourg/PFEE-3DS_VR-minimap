@@ -15,12 +15,14 @@ export interface MapContext {
  * @prop axisMode 'vertical' moves Y only, 'horizontal' moves X/Z only
  * @prop previewDelta uncommitted offset, applied visually only until commitFloorMove
  * @prop isMoving true while trigger held in VR drives the axis line visibility
+ * @prop cancelSelected VR panel: the "cancel the move" button under the floor list is selected (the floor stays selectedFloorIdx)
  */
 export interface FloorAdjustState {
     selectedFloorIdx: number;
     axisMode: AxisMode;
     previewDelta: { x: number; y: number; z: number };
     isMoving: boolean;
+    cancelSelected: boolean;
 }
 
 export function createFloorAdjustState(): FloorAdjustState {
@@ -29,6 +31,7 @@ export function createFloorAdjustState(): FloorAdjustState {
         axisMode: 'vertical',
         previewDelta: { x: 0, y: 0, z: 0 },
         isMoving: false,
+        cancelSelected: false,
     };
 }
 

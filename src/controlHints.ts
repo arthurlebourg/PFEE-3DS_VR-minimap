@@ -17,33 +17,29 @@ export interface ControlContext {
 }
 
 /**
- * What each button of a controller does in the current context. The single description of the VR controls:
- * keep it in step with the input code (main.ts, editMode.ts, floorManager.ts)
+ * What each button of a controller does in the current context. The single description of the VR controls, for the
+ * help shown in the headset: keep it in step with the input code (main.ts, editMode.ts, floorManager.ts)
  */
 export function getControlHints(hand: Hand, ctx: ControlContext): ControlHints {
-    return hand === 'left' ? leftHints(ctx) : rightHints(ctx);
+    return hand === 'left' ? leftHints() : rightHints(ctx);
 }
 
-function leftHints({ editActive, panel }: ControlContext): ControlHints {
-    if (!editActive) {
-        return {
-            thumbstick: 'Se déplacer · clic : minimap',
-            trigger: 'Maintenir : zoom minimap',
-            x: 'Descendre',
-            y: 'Monter',
-        };
-    }
+// The left hand is the minimap's (and moving), the same in every mode
+function leftHints(): ControlHints {
     return {
-        thumbstick: 'Se déplacer · clic : onglet',
+        thumbstick: 'Se déplacer · clic : minimap',
         trigger: 'Maintenir : zoom minimap',
-        y: panel === 'config' ? 'Valeurs par défaut' : 'Annuler le déplacement',
+        squeeze: 'Vue minimap (pleine / pièce / voisines)',
+        x: 'Descendre',
+        y: 'Monter',
     };
 }
 
+// The right hand turns the view, changes floor and drives the edit mode
 function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext): ControlHints {
     if (!editActive) {
         return {
-            thumbstick: '↔ tourner · clic : vue minimap',
+            thumbstick: '↔ tourner',
             trigger: 'Maintenir + stick ↕ : étage',
             squeeze: 'Grille de debug',
             a: 'Mode édition',
@@ -51,7 +47,7 @@ function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext
     }
     if (panel === 'config') {
         return {
-            thumbstick: '↕ choisir · clic : ouvrir/valider',
+            thumbstick: '↕ choisir · ↔ onglet · clic : valider',
             trigger: 'Maintenir + stick ↔ : régler',
             squeeze: 'Grille de debug',
             a: 'Quitter l\'édition',
@@ -61,7 +57,7 @@ function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext
         };
     }
     return {
-        thumbstick: '↕ étage · clic : axe',
+        thumbstick: '↕ étage · ↔ onglet · clic : axe',
         trigger: 'Maintenir + stick : déplacer',
         squeeze: 'Grille de debug',
         a: 'Quitter l\'édition',
