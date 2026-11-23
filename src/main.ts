@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { XRControllerModelFactory } from 'three/examples/jsm/webxr/XRControllerModelFactory.js';
 import { loadGLB } from './glbLoader.js';
 import { createPlayer, updateMovement, placePlayerOnFloor, snapTurn, getFeetY, calibrateEyeHeight, VIRTUAL_EYE_HEIGHT } from './player.js';
 import {
@@ -13,6 +14,8 @@ import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
 import { createEditMode, createEditModeInputHandler, getRebuildAction, setCategoryOpen } from './editMode.js';
+import { createControllerLabels, type ControllerLabels } from './controllerLabels.js';
+import { getControlHints, type ControlContext, type Hand } from './controlHints.js';
 import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
 import { commitFloorMove, type MapContext } from './floorAdjust.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
@@ -336,6 +339,9 @@ const player = createPlayer(camera);
 scene.add(player);
 
 // Controllers
+// Box standing for the controller until its real model is loaded (or if it can't be: it comes from a CDN)
+const CONTROLLER_PLACEHOLDER_NAME = 'controller-placeholder-body';
+
 function createControllerVisual(): THREE.Group {
     const group = new THREE.Group();
 
@@ -343,6 +349,7 @@ function createControllerVisual(): THREE.Group {
         new THREE.BoxGeometry(0.03, 0.03, 0.1),
         new THREE.MeshStandardMaterial({ color: 0x222222 })
     );
+    body.name = CONTROLLER_PLACEHOLDER_NAME;
     body.position.set(0, 0, -0.05);
     group.add(body);
 
@@ -357,17 +364,49 @@ function createControllerVisual(): THREE.Group {
     return group;
 }
 
+// Real controller models (WebXR input profiles), with labels on their buttons saying what they do
+const controllerModelFactory = new XRControllerModelFactory(null, (modelScene) => {
+    const grip = modelScene.parent?.parent; // model scene -> XRControllerModel -> grip
+    const placeholder = grip?.getObjectByName(CONTROLLER_PLACEHOLDER_NAME);
+    if (placeholder) placeholder.visible = false;
+});
+const controllerLabels: ControllerLabels[] = [];
+
 for (let i = 0; i < 2; i++) {
     const controller = renderer.xr.getController(i);
     player.add(controller);
 
     const grip = renderer.xr.getControllerGrip(i);
     grip.add(createControllerVisual());
+    const controllerModel = controllerModelFactory.createControllerModel(grip);
+    grip.add(controllerModel);
     player.add(grip);
+
+    const labels = createControllerLabels(grip, controllerModel);
+    controllerLabels.push(labels);
+
     grip.addEventListener('connected', (event) => {
         const handedness = event.data?.handedness;
         if (handedness === 'left' || handedness === 'right') grip.add(handAnchors[handedness]);
+        labels.setInputSource(event.data ?? null);
     });
+    grip.addEventListener('disconnected', () => {
+        labels.setInputSource(null);
+        const placeholder = grip.getObjectByName(CONTROLLER_PLACEHOLDER_NAME);
+        if (placeholder) placeholder.visible = true;
+    });
+}
+
+function controlHintsFor(hand: Hand) {
+    // reading the zoomed-in minimap: the left controller's labels would cover it
+    if (hand === 'left' && minimapZoom > 0.01) return {};
+    const ctx: ControlContext = {
+        editActive: editMode.active,
+        panel: editMode.panel,
+        rebuildAction: getRebuildAction(editMode),
+        hasMap: (sceneMap?.levels.length ?? 0) > 0,
+    };
+    return getControlHints(hand, ctx);
 }
 
 // XR movement
@@ -606,6 +645,9 @@ renderer.setAnimationLoop(() => {
     updateVRMinimapToggleInput();
     updateSnapTurn();
     updateMinimapZoom(timer.getDelta());
+    if (renderer.xr.isPresenting) {
+        for (const labels of controllerLabels) labels.update(controlHintsFor, camera, timer.getDelta());
+    }
 
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
