@@ -20,8 +20,10 @@ export interface Minimap3DConfig {
     targetSize: number;
     /** Slab thickness in world meters */
     slabHeight: number;
-    /** Fractional gap between adjacent floor cells for holographic grid aesthetics */
+    /** Fractional gap between adjacent floor cells, shows the map grid (only drawn when showGrid) */
     slabGapRatio: number;
+    /** Draw the map's cells apart (debug, with the scene's debug grid), else the floor is one continuous surface */
+    showGrid: boolean;
     /** Wall quad height in world meters */
     wallHeight: number;
     /** Position offset relative to the left grip controller */
@@ -65,6 +67,7 @@ export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
     targetSize: 0.14,
     slabHeight: 0.05,
     slabGapRatio: 0.04,
+    showGrid: false,
     wallHeight: 1.0, // half a storey: tall enough to read the rooms, low enough to see into them from above
     wristOffset: new THREE.Vector3(-0.22, -0.18, -0.55),
     wristRotation: new THREE.Euler(THREE.MathUtils.degToRad(55), THREE.MathUtils.degToRad(20), 0),
@@ -130,6 +133,8 @@ export interface VRMinimap3D {
      * @param amount in [0, 1], animate it for a smooth zoom
      */
     setHandZoom: (amount: number) => void;
+    /** Draw the map's cells apart (debug) or the floors as continuous surfaces. Rebuilds the maquette on change */
+    setGridVisible: (visible: boolean) => void;
     setVisible: (visible: boolean) => void;
     dispose: () => void;
 }
@@ -148,16 +153,22 @@ function pushQuad(
 /** Keeps only some cells of the floor's main walkable grid (e.g. one room's) */
 type CellFilter = (r: number, c: number) => boolean;
 
+/**
+ * Floor slabs, a box per walkable cell
+ * @param slabGapRatio gap between cells, as a fraction of a cell: shows the grid. At 0 the floor is one surface:
+ *                     the sides between two walkable cells (inside the slab, seen through its top) aren't drawn
+ */
 export function buildFloorSlabsGeometry(
     level: FloorLevel,
     sceneBounds: { sceneMinX: number; sceneMinZ: number },
     gridSize: number,
-    slabHeight = 0.05,
-    slabGapRatio = 0.04,
+    slabHeight = DEFAULT_MINIMAP_3D_CONFIG.slabHeight,
+    slabGapRatio = DEFAULT_MINIMAP_3D_CONFIG.slabGapRatio,
     cellFilter?: CellFilter
 ): THREE.BufferGeometry {
     const { sceneMinX, sceneMinZ } = sceneBounds;
     const half = (gridSize * (1 - slabGapRatio)) * 0.5;
+    const merged = slabGapRatio === 0;
     // Sub-levels have no room ids: a filtered build keeps the main grid only
     const subLayers = cellFilter ? [] : (level.subLevels?.map(s => ({ walkable: s.walkable, y: s.absoluteY })) ?? []);
     const layers = [{ walkable: level.walkable, y: level.floorY }, ...subLayers];
@@ -171,13 +182,19 @@ export function buildFloorSlabsGeometry(
                 if (cellFilter && !cellFilter(r, c)) continue;
                 const cx = sceneMinX + (c + 0.5) * gridSize;
                 const cz = sceneMinZ + (r + 0.5) * gridSize;
-                const x0 = cx - half, x1 = cx + half, z0 = cz - half, z1 = cz + half;
+                // merged: on the grid lines, computed the same way by both cells of a side so they share exact
+                // vertices (no pinholes between the quads)
+                const x0 = merged ? sceneMinX + c * gridSize : cx - half;
+                const x1 = merged ? sceneMinX + (c + 1) * gridSize : cx + half;
+                const z0 = merged ? sceneMinZ + r * gridSize : cz - half;
+                const z1 = merged ? sceneMinZ + (r + 1) * gridSize : cz + half;
+                const open = (nr: number, nc: number) => !merged || !walkable[nr]?.[nc];
 
                 pushQuad(pos, norm, idx, [x0, yTop, z0], [x1, yTop, z0], [x1, yTop, z1], [x0, yTop, z1], [0, 1, 0]);
-                pushQuad(pos, norm, idx, [x0, y, z0], [x1, y, z0], [x1, yTop, z0], [x0, yTop, z0], [0, 0, -1]);
-                pushQuad(pos, norm, idx, [x1, y, z0], [x1, y, z1], [x1, yTop, z1], [x1, yTop, z0], [1, 0, 0]);
-                pushQuad(pos, norm, idx, [x1, y, z1], [x0, y, z1], [x0, yTop, z1], [x1, yTop, z1], [0, 0, 1]);
-                pushQuad(pos, norm, idx, [x0, y, z1], [x0, y, z0], [x0, yTop, z0], [x0, yTop, z1], [-1, 0, 0]);
+                if (open(r - 1, c)) pushQuad(pos, norm, idx, [x0, y, z0], [x1, y, z0], [x1, yTop, z0], [x0, yTop, z0], [0, 0, -1]);
+                if (open(r, c + 1)) pushQuad(pos, norm, idx, [x1, y, z0], [x1, y, z1], [x1, yTop, z1], [x1, yTop, z0], [1, 0, 0]);
+                if (open(r + 1, c)) pushQuad(pos, norm, idx, [x1, y, z1], [x0, y, z1], [x0, yTop, z1], [x1, yTop, z1], [0, 0, 1]);
+                if (open(r, c - 1)) pushQuad(pos, norm, idx, [x0, y, z1], [x0, y, z0], [x0, yTop, z0], [x0, yTop, z1], [-1, 0, 0]);
             }
         }
     }
@@ -546,6 +563,10 @@ export function createVRMinimap3D(
     let currentRoomId = NO_ROOM;
     let highlightedKey = '';
 
+    function slabGap(): number {
+        return config.showGrid ? config.slabGapRatio : 0;
+    }
+
     function isRoomMode(): boolean {
         return config.displayMode !== 'solid' && !currentIsPreview;
     }
@@ -577,7 +598,7 @@ export function createVRMinimap3D(
         const { sceneBounds, gridSize } = currentMap;
         const roomId = currentRoomId;
         const inRoom = (r: number, c: number) => level.roomIds[r]?.[c] === roomId;
-        addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.slabGapRatio, inRoom), roomSlabMat, 5);
+        addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, slabGap(), inRoom), roomSlabMat, 5);
         const roomWallSides = new Set<string>(); // a wall between the room and a neighbour is the room's
         addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inRoom, roomWallSides), roomWallMat, 6);
 
@@ -585,7 +606,7 @@ export function createVRMinimap3D(
             const neighbours = findRoomNeighbours(level, roomId);
             if (neighbours.size > 0) {
                 const inNeighbour = (r: number, c: number) => neighbours.has(level.roomIds[r]?.[c] ?? NO_ROOM);
-                addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.slabGapRatio, inNeighbour), neighbourSlabMat, 4);
+                addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, slabGap(), inNeighbour), neighbourSlabMat, 4);
                 addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inNeighbour, roomWallSides), neighbourWallMat, 5);
             }
         }
@@ -623,7 +644,7 @@ export function createVRMinimap3D(
 
         sceneMap.levels.forEach((level) => {
             const floorGroup = new THREE.Group();
-            const slabGeo = buildFloorSlabsGeometry(level, sceneMap.sceneBounds, sceneMap.gridSize, config.slabHeight, config.slabGapRatio);
+            const slabGeo = buildFloorSlabsGeometry(level, sceneMap.sceneBounds, sceneMap.gridSize, config.slabHeight, slabGap());
             const slabMesh = new THREE.Mesh(slabGeo, slabMat);
             slabMesh.renderOrder = 5;
             floorGroup.add(slabMesh);
@@ -784,6 +805,12 @@ export function createVRMinimap3D(
             root.rotation.copy(mount === 'hand' ? config.handRotation : config.wristRotation);
             root.scale.setScalar(1);
             handZoom = 0;
+        },
+
+        setGridVisible: (visible: boolean) => {
+            if (config.showGrid === visible) return;
+            config.showGrid = visible;
+            buildModel(currentMap);
         },
 
         setHandZoom: (amount: number) => {

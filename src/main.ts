@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { loadGLB } from './glbLoader.js';
-import { createPlayer, updateMovement, placePlayerOnFloor, snapTurn, getFeetY, MIN_REAL_EYE_HEIGHT } from './player.js';
+import { createPlayer, updateMovement, placePlayerOnFloor, snapTurn, getFeetY, calibrateEyeHeight, VIRTUAL_EYE_HEIGHT } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
     type SceneMap, type MinimapConfig, type FloorLevel,
@@ -141,6 +141,7 @@ function refreshMinimap3D(): void {
     } else {
         vrMinimap3D = createVRMinimap3D(hudMinimapAnchor, sceneMap);
         if (renderer.xr.isPresenting) vrMinimap3D.attachTo(handAnchors.left, 'hand');
+        vrMinimap3D.setGridVisible(debugOverlayVisible);
         vrMinimap3D.setVisible(hudMinimapVisible);
     }
 }
@@ -188,9 +189,11 @@ function getMapContext(): MapContext {
     return { levelCount: sceneMap.levels.length, gridSize: sceneMap.gridSize, levels: sceneMap.levels };
 }
 
+/** The scene's debug grid, and the map cells drawn apart in the 3D minimap with it */
 function toggleDebugOverlay(): void {
     debugOverlayVisible = !debugOverlayVisible;
     debugOverlay?.toggle();
+    vrMinimap3D?.setGridVisible(debugOverlayVisible);
 }
 
 function recreateDebugOverlay(): void {
@@ -390,13 +393,17 @@ renderer.xr.addEventListener('sessionstart', () => {
     player.rotation.set(0, 0, 0);
     spawnPending = true;
     spawnWaitFrames = 0;
+    eyeHeightCalibrated = false;
 });
 
-// Headset poses can start before the tracking (at the origin, or emulated): placing the player on one of those puts
-// the eyes a whole eye height too high once the real pose comes. Waits for a tracked pose at eye height, at most this
-// many frames (with a 'local' reference space the head stays near y = 0)
+// Headset poses can start before the tracking (at the origin, or emulated): calibrating the eye height on one of
+// those puts the eyes too high once the real pose comes. Waits for a tracked pose above SPAWN_MIN_HEAD_Y, at most
+// this many frames (with a 'local' reference space the head stays near y = 0)
 const SPAWN_MAX_WAIT_FRAMES = 90;
+const SPAWN_MIN_HEAD_Y = 0.5;
 let spawnWaitFrames = 0;
+// Once per session: a later respawn (first map built in VR) keeps the eye height the user started with
+let eyeHeightCalibrated = false;
 
 function trySpawn(): void {
     const frame = renderer.xr.getFrame();
@@ -404,9 +411,13 @@ function trySpawn(): void {
     const pose = frame && refSpace ? frame.getViewerPose(refSpace) : null;
     if (!pose) return;
     spawnWaitFrames++;
-    const poseIsReal = !pose.emulatedPosition && camera.position.y > MIN_REAL_EYE_HEIGHT;
+    const poseIsReal = !pose.emulatedPosition && camera.position.y > SPAWN_MIN_HEAD_Y;
     if (!poseIsReal && spawnWaitFrames < SPAWN_MAX_WAIT_FRAMES) return;
-    console.log(`Spawn: headset at y=${camera.position.y.toFixed(2)} m in the reference space after ${spawnWaitFrames} frames`);
+    if (!eyeHeightCalibrated) {
+        const headY = calibrateEyeHeight(camera);
+        eyeHeightCalibrated = true;
+        console.log(`Spawn: headset at y=${headY.toFixed(2)} m in the reference space after ${spawnWaitFrames} frames, taken as eyes ${VIRTUAL_EYE_HEIGHT} m above the floor`);
+    }
 
     const level = currentLevel();
     if (level) {
@@ -601,7 +612,7 @@ renderer.setAnimationLoop(() => {
     if (!editMode.active && sceneMap && sceneMap.levels.length > 0) {
         updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera);
         // the floor shown is the one under the feet, whichever way the player got there (stairs, Y / X)
-        if (renderer.xr.isPresenting && !spawnPending) syncFloorWithHeight(floorState, sceneMap, getFeetY(player, camera));
+        if (renderer.xr.isPresenting && !spawnPending) syncFloorWithHeight(floorState, sceneMap, getFeetY(player));
     }
 
     if (vrMinimap3D && sceneMap) {
@@ -681,10 +692,7 @@ window.addEventListener('keydown', e => {
     if (e.key === 'g' || e.key === 'G') {
         debugStairsOnly = !debugStairsOnly;
         // asked while the overlay is hidden: show it
-        if (debugStairsOnly && !debugOverlayVisible) {
-            debugOverlayVisible = true;
-            debugOverlay?.toggle();
-        }
+        if (debugStairsOnly && !debugOverlayVisible) toggleDebugOverlay();
         debugOverlay?.setStairsOnly(debugStairsOnly);
     }
     if (e.key === 'e' || e.key === 'E') {

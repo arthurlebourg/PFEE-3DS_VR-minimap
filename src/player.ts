@@ -26,15 +26,32 @@ export function updateMovement(
     player.position.addScaledVector(right, joystick.x * speed);
 }
 
-// Eye height used when the XR reference space doesn't provide the user's real one
-const DEFAULT_EYE_HEIGHT = 1.65;
-// Under this, the headset Y isn't a real eye height: the reference space origin is at the head ('local'), not on the floor ('local-floor')
-export const MIN_REAL_EYE_HEIGHT = 0.5;
+/**
+ * Height of the eyes above the virtual floor, the same at every session: the headset's own floor isn't reliable
+ * (seated user, floor calibrated wrong, 'local' reference space with its origin at the head), it gave a different
+ * height at each session. Crouching and standing up still move the view, relative to this
+ */
+export const VIRTUAL_EYE_HEIGHT = 1.65;
 
 /**
- * Move the player so the headset (not the player origin) stands at (x, z) on the floor at floorY.
- * Uses the headset pose in the reference space, so it works whether the origin is on the real floor
- * (real headset, 'local-floor') or at the head: call it once camera.position holds an XR pose
+ * Height of the virtual floor in the player's space (the reference space): the headset height at calibration
+ * minus VIRTUAL_EYE_HEIGHT. 0 when the reference space origin is on the floor and the user is VIRTUAL_EYE_HEIGHT tall
+ */
+let floorOffsetY = 0;
+
+/**
+ * Take the current headset height as standing at VIRTUAL_EYE_HEIGHT. Once per session, at the spawn:
+ * call it once camera.position holds an XR pose
+ * @return headset height in the reference space, for logs
+ */
+export function calibrateEyeHeight(camera: THREE.Camera): number {
+    floorOffsetY = camera.position.y - VIRTUAL_EYE_HEIGHT;
+    return camera.position.y;
+}
+
+/**
+ * Move the player so the headset (not the player origin) stands at (x, z) on the floor at floorY,
+ * the eyes VIRTUAL_EYE_HEIGHT above it if the user stands as at the calibration
  * @param player Player group, parent of the camera
  * @param camera XR camera, its position = headset pose relative to the player
  */
@@ -47,20 +64,16 @@ export function placePlayerOnFloor(
 ): void {
     // headset offset from the player origin, turned by the player's snap turns
     const head = headOffset.copy(camera.position).applyQuaternion(player.quaternion);
-    const eyeHeight = camera.position.y > MIN_REAL_EYE_HEIGHT ? camera.position.y : DEFAULT_EYE_HEIGHT;
-    player.position.set(x - head.x, floorY + eyeHeight - head.y, z - head.z);
+    player.position.set(x - head.x, floorY - floorOffsetY, z - head.z);
 }
 
 const headOffset = new THREE.Vector3();
 const headBefore = new THREE.Vector3();
 const headAfter = new THREE.Vector3();
 
-/**
- * Height of the user's feet in the world: the player origin is on the real floor with 'local-floor',
- * at the head with 'local' (then a default eye height is assumed)
- */
-export function getFeetY(player: THREE.Group, camera: THREE.Camera): number {
-    return camera.position.y > MIN_REAL_EYE_HEIGHT ? player.position.y : player.position.y + camera.position.y - DEFAULT_EYE_HEIGHT;
+/** Height of the user's feet (the virtual floor under them) in the world, crouching doesn't change it */
+export function getFeetY(player: THREE.Group): number {
+    return player.position.y + floorOffsetY;
 }
 
 /**
