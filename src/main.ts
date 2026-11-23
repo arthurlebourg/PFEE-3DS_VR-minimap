@@ -25,35 +25,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.xr.enabled = true;
-fallBackToWebGLLayerWhenBindingFails(renderer);
 renderer.xr.cameraAutoUpdate = false;
 renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
-
-/**
- * three renders VR into an XRProjectionLayer through an XRWebGLBinding when the browser has one. The Immersive Web
- * Emulator hands out sessions the browser's XRWebGLBinding refuses ("Failed to construct 'XRWebGLBinding'"):
- * for those, three is made to take its XRWebGLLayer path instead. Tested on the session itself, as the emulator's
- * extension wraps navigator.xr even when it lets a real headset through (Chrome + Link), which needs the binding
- */
-function fallBackToWebGLLayerWhenBindingFails(renderer: THREE.WebGLRenderer): void {
-    if (typeof XRWebGLBinding === 'undefined') return;
-    const setSession = renderer.xr.setSession.bind(renderer.xr);
-    renderer.xr.setSession = async (session: XRSession | null) => {
-        if (session && 'createProjectionLayer' in XRWebGLBinding.prototype) {
-            const gl = renderer.getContext();
-            try {
-                await gl.makeXRCompatible();
-                new XRWebGLBinding(session, gl);
-            } catch (e) {
-                console.warn('XRWebGLBinding refused this session (WebXR emulator?), rendering through an XRWebGLLayer:', e);
-                // three checks for this method when a session starts to choose between the two
-                delete (XRWebGLBinding.prototype as unknown as Record<string, unknown>).createProjectionLayer;
-            }
-        }
-        return setSession(session);
-    };
-}
 
 // Scene
 const scene = new THREE.Scene();
