@@ -102,6 +102,7 @@ export interface StairConnector {
  * @prop levels Available floors
  * @prop modelSha1 SHA-1 of the GLB file the map was built from (null if it couldn't be computed)
  * @prop config Parameters the map was built with
+ * @prop histogram Density histogram of the floor detection (edit mode panel). Missing in maps saved before it was added
  */
 export interface SceneMap {
     version: number;
@@ -114,6 +115,13 @@ export interface SceneMap {
     gridSize: number;
     levels: FloorLevel[];
     connectors: StairConnector[];
+    histogram?: HistogramBin[];
+}
+
+/** @typedef HistogramBin one Y-slice of the density histogram */
+export interface HistogramBin {
+    y: number;
+    count: number;
 }
 
 /**

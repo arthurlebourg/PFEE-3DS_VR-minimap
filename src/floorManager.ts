@@ -32,6 +32,36 @@ export function createFloorManager(initialIdx = 0): FloorManagerState {
     };
 }
 
+// Above this much under a floor the feet count as on it: the next floor shows up near the top of a staircase
+const FLOOR_SNAP_BELOW = 0.3;
+
+/**
+ * Index of the floor the feet are on: the highest floor whose height they reached (lowest floor when under all of them)
+ * @param feetY world height of the user's feet
+ */
+export function floorIndexAtHeight(map: SceneMap, feetY: number): number {
+    let best = -1;
+    for (let i = 0; i < map.levels.length; i++) {
+        const { floorY } = map.levels[i];
+        if (feetY >= floorY - FLOOR_SNAP_BELOW && (best < 0 || floorY > map.levels[best].floorY)) best = i;
+    }
+    if (best >= 0) return best;
+    for (let i = 0; i < map.levels.length; i++) {
+        if (best < 0 || map.levels[i].floorY < map.levels[best].floorY) best = i;
+    }
+    return Math.max(0, best);
+}
+
+/**
+ * Follow the player's height (walking up stairs, Y / X buttons): the current floor becomes the one under their feet.
+ * Not while the trigger previews another floor
+ */
+export function syncFloorWithHeight(state: FloorManagerState, map: SceneMap, feetY: number): void {
+    if (state.triggerHeld || map.levels.length === 0) return;
+    state.curFloorIdx = floorIndexAtHeight(map, feetY);
+    state.prevFloorIdx = state.curFloorIdx;
+}
+
 /**
  * Returns the currently targeted floor index (preview floor while trigger is held, or confirmed current floor)
  */
@@ -74,7 +104,6 @@ export function updateFloorManager(
 
         const target = state.curFloorIdx + state.dir;
         state.prevFloorIdx = Math.max(0, Math.min(map.levels.length - 1, target));
-        console.log(target)
 
     } else if (wasHeld) {
         const target = state.curFloorIdx + state.dir;

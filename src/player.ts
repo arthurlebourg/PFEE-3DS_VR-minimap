@@ -45,7 +45,33 @@ export function placePlayerOnFloor(
     floorY: number,
     z: number,
 ): void {
-    const head = camera.position;
-    const eyeHeight = head.y > MIN_REAL_EYE_HEIGHT ? head.y : DEFAULT_EYE_HEIGHT;
+    // headset offset from the player origin, turned by the player's snap turns
+    const head = headOffset.copy(camera.position).applyQuaternion(player.quaternion);
+    const eyeHeight = camera.position.y > MIN_REAL_EYE_HEIGHT ? camera.position.y : DEFAULT_EYE_HEIGHT;
     player.position.set(x - head.x, floorY + eyeHeight - head.y, z - head.z);
+}
+
+const headOffset = new THREE.Vector3();
+const headBefore = new THREE.Vector3();
+const headAfter = new THREE.Vector3();
+
+/**
+ * Height of the user's feet in the world: the player origin is on the real floor with 'local-floor',
+ * at the head with 'local' (then a default eye height is assumed)
+ */
+export function getFeetY(player: THREE.Group, camera: THREE.Camera): number {
+    return camera.position.y > MIN_REAL_EYE_HEIGHT ? player.position.y : player.position.y + camera.position.y - DEFAULT_EYE_HEIGHT;
+}
+
+/**
+ * Turn the player about the vertical through the headset (not the play area origin), so the view turns in place
+ * @param angle radians, positive = to the left
+ */
+export function snapTurn(player: THREE.Group, camera: THREE.Camera, angle: number): void {
+    camera.getWorldPosition(headBefore);
+    player.rotation.y += angle;
+    player.updateMatrixWorld(true);
+    camera.getWorldPosition(headAfter);
+    player.position.x += headBefore.x - headAfter.x;
+    player.position.z += headBefore.z - headAfter.z;
 }

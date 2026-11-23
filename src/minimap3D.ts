@@ -30,6 +30,10 @@ export interface Minimap3DConfig {
     wristRotation: THREE.Euler;
     /** Incline angle (legacy fallback) */
     wristTiltAngle: number;
+    /** In VR: position relative to the left controller grip (grip space: -Z along the controller, +Y above it) */
+    handOffset: THREE.Vector3;
+    /** In VR: rotation relative to the left controller grip, +X pitch tilts the base towards the user */
+    handRotation: THREE.Euler;
     /** Color of the active floor slabs */
     activeColor: number;
     /** Opacity of the active floor slabs */
@@ -61,6 +65,8 @@ export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
     wristOffset: new THREE.Vector3(-0.22, -0.18, -0.55),
     wristRotation: new THREE.Euler(THREE.MathUtils.degToRad(55), THREE.MathUtils.degToRad(20), 0),
     wristTiltAngle: THREE.MathUtils.degToRad(55),
+    handOffset: new THREE.Vector3(0, 0.07, -0.05),
+    handRotation: new THREE.Euler(THREE.MathUtils.degToRad(25), 0, 0),
     activeColor: 0x00f0ff,
     activeOpacity: 0.85,
     wallColor: 0xd0f0ff,
@@ -75,6 +81,8 @@ export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
 };
 
 export type UpperFloorsMode = 'dim' | 'hide';
+
+export type MinimapMount = 'head' | 'hand';
 
 export interface Floor3D {
     id: number;
@@ -106,7 +114,11 @@ export interface VRMinimap3D {
     setWristTilt: (pitchDegrees: number, yawDegrees?: number) => void;
     setTargetSize: (sizeMeters: number) => void;
     rebuild: (sceneMap: SceneMap) => void;
-    attachTo: (newParent: THREE.Object3D) => void;
+    /**
+     * Move the maquette under another parent
+     * @param mount 'head': camera HUD pose (wristOffset / wristRotation), 'hand': controller pose (handOffset / handRotation)
+     */
+    attachTo: (newParent: THREE.Object3D, mount?: MinimapMount) => void;
     setVisible: (visible: boolean) => void;
     dispose: () => void;
 }
@@ -472,6 +484,7 @@ export function createVRMinimap3D(
     root.position.copy(config.wristOffset);
     root.rotation.copy(config.wristRotation);
     parent.add(root);
+    let mount: MinimapMount = 'head';
 
     const buildingContainer = new THREE.Group();
     const pedestalGroup = new THREE.Group();
@@ -708,7 +721,7 @@ export function createVRMinimap3D(
 
         setWristOffset: (x: number, y: number, z: number) => {
             config.wristOffset.set(x, y, z);
-            root.position.copy(config.wristOffset);
+            if (mount === 'head') root.position.copy(config.wristOffset);
         },
 
         setWristTilt: (pitchDegrees: number, yawDegrees?: number) => {
@@ -716,7 +729,7 @@ export function createVRMinimap3D(
             const yawRad = yawDegrees !== undefined ? THREE.MathUtils.degToRad(yawDegrees) : config.wristRotation.y;
             config.wristRotation.set(pitchRad, yawRad, 0);
             config.wristTiltAngle = pitchRad;
-            root.rotation.copy(config.wristRotation);
+            if (mount === 'head') root.rotation.copy(config.wristRotation);
         },
 
         setTargetSize: (sizeMeters: number) => {
@@ -731,9 +744,12 @@ export function createVRMinimap3D(
             instance.scaleFactor = scaleFactor;
         },
 
-        attachTo: (newParent: THREE.Object3D) => {
+        attachTo: (newParent: THREE.Object3D, newMount: MinimapMount = 'head') => {
             if (root.parent) root.parent.remove(root);
             newParent.add(root);
+            mount = newMount;
+            root.position.copy(mount === 'hand' ? config.handOffset : config.wristOffset);
+            root.rotation.copy(mount === 'hand' ? config.handRotation : config.wristRotation);
         },
 
         setVisible: (visible: boolean) => {

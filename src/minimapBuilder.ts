@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-import { CACHE_VERSION, type SceneMap, type FloorLevel, type MinimapConfig, type StairConnector } from './minimap.js';
+import { CACHE_VERSION, type SceneMap, type FloorLevel, type MinimapConfig, type StairConnector, type HistogramBin } from './minimap.js';
+
+export type { HistogramBin };
 import { buildWalkableGrid, pickSpawn, openingByReconstruction, largestComponent } from './minimapUtils.js';
 import { segmentRooms } from './roomSegmentation.js';
 
@@ -184,11 +186,6 @@ function castDown(
     return ys;
 }
 
-/** @typedef HistogramBin one Y-slice of the density histogram */
-export interface HistogramBin {
-    y: number;
-    count: number;
-}
 
 /**
  * Cast a horizontal ray from (x, y, z) in direction (dx, 0, dz) and return true

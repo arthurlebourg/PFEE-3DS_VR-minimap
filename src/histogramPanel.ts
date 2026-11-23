@@ -82,7 +82,7 @@ export interface HistogramHud {
     dispose: () => void;
 }
 
-export function createHistogramHud(grip: THREE.XRTargetRaySpace): HistogramHud {
+export function createHistogramHud(grip: THREE.Object3D): HistogramHud {
     const canvas = document.createElement('canvas');
     canvas.width = HISTOGRAM_CANVAS_WIDTH;
     canvas.height = HISTOGRAM_CANVAS_HEIGHT;

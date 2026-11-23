@@ -2,12 +2,12 @@ import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { loadGLB } from './glbLoader.js';
-import { createPlayer, updateMovement, placePlayerOnFloor } from './player.js';
+import { createPlayer, updateMovement, placePlayerOnFloor, snapTurn, getFeetY } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
     type SceneMap, type MinimapConfig, type FloorLevel,
 } from './minimap.js';
-import { createFloorManager, updateFloorManager, getActiveFloorIdx } from './floorManager.js';
+import { createFloorManager, updateFloorManager, getActiveFloorIdx, syncFloorWithHeight } from './floorManager.js';
 import { createVRMinimap3D, MINIMAP_DISPLAY_MODES, type VRMinimap3D } from './minimap3D.ts';
 import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
@@ -116,7 +116,7 @@ const modelBounds = new THREE.Box3().setFromObject(model);
 
 // SceneMap: null until loaded or built. Building runs in the background: the scene is usable meanwhile
 let sceneMap: SceneMap | null = loadedMap;
-let histogram: HistogramBin[] = [];
+let histogram: HistogramBin[] = loadedMap?.histogram ?? [];
 const loadingBar = createLoadingBar();
 
 // Hidden at start, 'h' shows it
@@ -131,6 +131,10 @@ const hudMinimapAnchor = new THREE.Group();
 hudMinimapAnchor.name = 'hud-minimap-anchor';
 camera.add(hudMinimapAnchor);
 
+// In VR, things held in a hand: the 3D minimap in the left one, the edit mode panels in the right one.
+// Moved onto the grip of the controller in that hand once it connects (the controller index doesn't tell the hand)
+const handAnchors = { left: new THREE.Group(), right: new THREE.Group() };
+
 let vrMinimap3D: VRMinimap3D | null = null;
 let hudMinimapVisible = true;
 
@@ -140,6 +144,7 @@ function refreshMinimap3D(): void {
         vrMinimap3D.rebuild(sceneMap);
     } else {
         vrMinimap3D = createVRMinimap3D(hudMinimapAnchor, sceneMap);
+        if (renderer.xr.isPresenting) vrMinimap3D.attachTo(handAnchors.left, 'hand');
         vrMinimap3D.setVisible(hudMinimapVisible);
     }
 }
@@ -185,6 +190,11 @@ function disposeFloorMoveVisual(): void {
 function getMapContext(): MapContext {
     if (!sceneMap) return { levelCount: 0, gridSize: editMode.config.gridSize, levels: [] };
     return { levelCount: sceneMap.levels.length, gridSize: sceneMap.gridSize, levels: sceneMap.levels };
+}
+
+function toggleDebugOverlay(): void {
+    debugOverlayVisible = !debugOverlayVisible;
+    debugOverlay?.toggle();
 }
 
 function recreateDebugOverlay(): void {
@@ -235,6 +245,7 @@ async function rebuildMinimap(): Promise<void> {
             },
         );
         built.map.modelSha1 = modelSha1;
+        built.map.histogram = built.histogram;
         applyMap(built.map, built.histogram);
     } catch (e) {
         if (controller.signal.aborted) return; // restarted or cancelled
@@ -354,6 +365,10 @@ for (let i = 0; i < 2; i++) {
     const grip = renderer.xr.getControllerGrip(i);
     grip.add(createControllerVisual());
     player.add(grip);
+    grip.addEventListener('connected', (event) => {
+        const handedness = event.data?.handedness;
+        if (handedness === 'left' || handedness === 'right') grip.add(handAnchors[handedness]);
+    });
 }
 
 // XR movement
@@ -376,6 +391,7 @@ let spawnIsProvisional = false;
 renderer.xr.addEventListener('sessionstart', () => {
     desktopControls.enabled = false;
     camera.position.set(0, 0, 0);
+    player.rotation.set(0, 0, 0);
     spawnPending = true;
 });
 
@@ -398,16 +414,18 @@ function trySpawn(): void {
 
 renderer.xr.addEventListener('sessionend', () => {
     desktopControls.enabled = true;
+    // the orbit camera is in the player's space: back to the world's
+    player.position.set(0, 0, 0);
+    player.rotation.set(0, 0, 0);
     camera.position.set(initialSpawn.x, initialSpawn.y + 2.0, initialSpawn.z + 8);
     desktopControls.target.set(initialSpawn.x, initialSpawn.y + 1.0, initialSpawn.z);
 });
 
-// In WebXR as well as desktop: stays comfortably anchored in camera HUD!
-// Hands remain 100% free; moving the left joystick or controller does not move the map.
+// 3D minimap: held above the left controller in VR (it follows the hand, not the gaze), HUD of the camera on desktop
 renderer.xr.addEventListener('sessionstart', () => {
     hudMinimapAnchor.visible = hudMinimapVisible;
     if (vrMinimap3D) {
-        vrMinimap3D.attachTo(hudMinimapAnchor);
+        vrMinimap3D.attachTo(handAnchors.left, 'hand');
         vrMinimap3D.setVisible(hudMinimapVisible);
     }
 });
@@ -415,32 +433,31 @@ renderer.xr.addEventListener('sessionstart', () => {
 renderer.xr.addEventListener('sessionend', () => {
     hudMinimapAnchor.visible = hudMinimapVisible;
     if (vrMinimap3D) {
-        vrMinimap3D.attachTo(hudMinimapAnchor);
+        vrMinimap3D.attachTo(hudMinimapAnchor, 'head');
         vrMinimap3D.setVisible(hudMinimapVisible);
     }
 });
 
-// Edit mode panel (right grip) — A button toggles, B button rebuilds
-const rightGrip = renderer.xr.getControllerGrip(1);
+// Edit mode panel (right hand) — A button toggles, B button rebuilds
 let vrConfigPanel: VRConfigPanel | null = null;
 
 renderer.xr.addEventListener('sessionstart', () => {
-    vrConfigPanel = createVRConfigPanel(rightGrip, 256);
+    vrConfigPanel = createVRConfigPanel(handAnchors.right, 256);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
     if (vrConfigPanel) {
-        rightGrip.remove(vrConfigPanel.mesh);
+        handAnchors.right.remove(vrConfigPanel.mesh);
         vrConfigPanel.texture.dispose();
         vrConfigPanel = null;
     }
 });
 
-// Histogram HUD on right grip (just to the left of the edit mode config panel)
+// Histogram HUD in the right hand (just to the left of the edit mode config panel)
 let histogramHud: HistogramHud | null = null;
 
 renderer.xr.addEventListener('sessionstart', () => {
-    histogramHud = createHistogramHud(rightGrip);
+    histogramHud = createHistogramHud(handAnchors.right);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
@@ -464,6 +481,31 @@ function getVRJoystick(): { x: number; y: number } {
         if (Math.abs(x) > 0.1 || Math.abs(y) > 0.1) return { x, y };
     }
     return { x: 0, y: 0 };
+}
+
+// Right stick left / right turns the view by steps (smooth turning makes people sick). Not in edit mode, where
+// the right stick drives the panels, nor while the trigger is held, where it picks a floor
+const SNAP_TURN_ANGLE = THREE.MathUtils.degToRad(30);
+const SNAP_TURN_THRESHOLD = 0.7;
+const SNAP_TURN_REARM = 0.3; // the stick has to come back near the centre before the next step
+let snapTurnArmed = true;
+
+function updateSnapTurn(): void {
+    const session = renderer.xr.getSession();
+    if (!session || editMode.active || floorState.triggerHeld) {
+        snapTurnArmed = true;
+        return;
+    }
+    for (const source of session.inputSources) {
+        if (source.handedness !== 'right' || !source.gamepad) continue;
+        const x = source.gamepad.axes[2] ?? 0;
+        if (snapTurnArmed && Math.abs(x) > SNAP_TURN_THRESHOLD) {
+            snapTurn(player, camera, x > 0 ? -SNAP_TURN_ANGLE : SNAP_TURN_ANGLE);
+            snapTurnArmed = false;
+        } else if (Math.abs(x) < SNAP_TURN_REARM) {
+            snapTurnArmed = true;
+        }
+    }
 }
 
 // left Y / X buttons move the player up / down in absolute terms, not between floors.
@@ -525,11 +567,14 @@ renderer.setAnimationLoop(() => {
     }
 
     updateVRMinimapToggleInput();
+    updateSnapTurn();
 
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
     if (!editMode.active && sceneMap && sceneMap.levels.length > 0) {
         updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera);
+        // the floor shown is the one under the feet, whichever way the player got there (stairs, Y / X)
+        if (renderer.xr.isPresenting && !spawnPending) syncFloorWithHeight(floorState, sceneMap, getFeetY(player, camera));
     }
 
     if (vrMinimap3D && sceneMap) {
@@ -577,9 +622,11 @@ window.addEventListener('resize', () => {
 });
 
 // Left stick click shows / hides the 3D minimap, right stick click changes its display mode.
-// Disabled in edit mode, where both stick clicks are taken
+// Disabled in edit mode, where both stick clicks are taken.
+// Right grip shows / hides the debug grid of the floors in the scene ('h' on desktop), edit mode included
 let lastVRMinimapBtnState = false;
 let lastVRDisplayModeBtnState = false;
+let lastVRDebugGridBtnState = false;
 function updateVRMinimapToggleInput(): void {
     const session = renderer.xr.getSession();
     if (!session) return;
@@ -593,16 +640,17 @@ function updateVRMinimapToggleInput(): void {
         } else if (source.handedness === 'right') {
             if (pressed && !lastVRDisplayModeBtnState && !editMode.active) cycleMinimapDisplayMode();
             lastVRDisplayModeBtnState = pressed;
+
+            const gripPressed = gp.buttons[1]?.pressed ?? false;
+            if (gripPressed && !lastVRDebugGridBtnState) toggleDebugOverlay();
+            lastVRDebugGridBtnState = gripPressed;
         }
     }
 }
 
 // Display debug overlay
 window.addEventListener('keydown', e => {
-    if (e.key === 'h' || e.key === 'H') {
-        debugOverlayVisible = !debugOverlayVisible;
-        debugOverlay?.toggle();
-    }
+    if (e.key === 'h' || e.key === 'H') toggleDebugOverlay();
     if (e.key === 'g' || e.key === 'G') {
         debugStairsOnly = !debugStairsOnly;
         // asked while the overlay is hidden: show it

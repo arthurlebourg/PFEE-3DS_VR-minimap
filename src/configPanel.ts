@@ -563,7 +563,7 @@ function prepareCanvas(canvas: HTMLCanvasElement, canvasSize: number): CanvasRen
     return ctx;
 }
 
-export function createVRConfigPanel(grip: THREE.XRTargetRaySpace, canvasSize = 256): VRConfigPanel {
+export function createVRConfigPanel(grip: THREE.Object3D, canvasSize = 256): VRConfigPanel {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = canvasSize * VR_PANEL_PIXEL_RATIO;
 
