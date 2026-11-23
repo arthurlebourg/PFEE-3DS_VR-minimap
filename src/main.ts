@@ -20,6 +20,9 @@ import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type 
 import { createLoadingBar } from './loadingBar.js';
 import { createStartScreen, type StartSelection } from './startScreen.js';
 
+// Patch XRWebGLBinding bug
+if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
+
 // Renderer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);

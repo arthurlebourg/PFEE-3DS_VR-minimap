@@ -65,7 +65,7 @@ export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
     targetSize: 0.14,
     slabHeight: 0.05,
     slabGapRatio: 0.04,
-    wallHeight: 2.2,
+    wallHeight: 1.0, // half a storey: tall enough to read the rooms, low enough to see into them from above
     wristOffset: new THREE.Vector3(-0.22, -0.18, -0.55),
     wristRotation: new THREE.Euler(THREE.MathUtils.degToRad(55), THREE.MathUtils.degToRad(20), 0),
     wristTiltAngle: THREE.MathUtils.degToRad(55),
@@ -191,20 +191,32 @@ export function buildFloorSlabsGeometry(
     return geo;
 }
 
+// sideKey: the cell side on the grid lines, 'h r c' from vertex (r, c) to (r, c + 1), 'v r c' from (r, c) to (r + 1, c).
+// A wall between two walkable cells is in both cells' masks: same key, drawn once
 const WALL_DIRS = [
-    { bit: 1, dx0: -0.5, dz0: -0.5, dx1: 0.5, dz1: -0.5, n: [0, 0, -1] as [number, number, number] }, // N
-    { bit: 2, dx0: 0.5, dz0: -0.5, dx1: 0.5, dz1: 0.5, n: [1, 0, 0] as [number, number, number] },   // E
-    { bit: 4, dx0: 0.5, dz0: 0.5, dx1: -0.5, dz1: 0.5, n: [0, 0, 1] as [number, number, number] },   // S
-    { bit: 8, dx0: -0.5, dz0: 0.5, dx1: -0.5, dz1: -0.5, n: [-1, 0, 0] as [number, number, number] }, // W
+    { bit: WALL_N, dx0: -0.5, dz0: -0.5, dx1: 0.5, dz1: -0.5, n: [0, 0, -1] as [number, number, number], sideKey: (r: number, c: number) => `h ${r} ${c}` },
+    { bit: WALL_E, dx0: 0.5, dz0: -0.5, dx1: 0.5, dz1: 0.5, n: [1, 0, 0] as [number, number, number], sideKey: (r: number, c: number) => `v ${r} ${c + 1}` },
+    { bit: WALL_S, dx0: 0.5, dz0: 0.5, dx1: -0.5, dz1: 0.5, n: [0, 0, 1] as [number, number, number], sideKey: (r: number, c: number) => `h ${r + 1} ${c}` },
+    { bit: WALL_W, dx0: -0.5, dz0: 0.5, dx1: -0.5, dz1: -0.5, n: [-1, 0, 0] as [number, number, number], sideKey: (r: number, c: number) => `v ${r} ${c}` },
 ];
 
+// Wall top lines sit this far (model metres) above the wall quads: on the quads' top edge they z-fight with them
+const WALL_EDGE_LIFT = 0.02;
+
+/**
+ * Wall quads of a floor, one per wall side even when both cells beside it have the wall
+ * (two coplanar transparent quads z-fight: the walls flicker)
+ * @param drawnSides sides already drawn by another mesh, skipped; the sides drawn here are added to it.
+ *                   Lets two meshes (the room and its neighbours) share a wall without both drawing it
+ */
 export function buildFloorWallsGeometry(
     level: FloorLevel,
     sceneBounds: { sceneMinX: number; sceneMinZ: number },
     gridSize: number,
-    slabHeight = 0.05,
-    wallHeight = 2.2,
-    cellFilter?: CellFilter
+    slabHeight = DEFAULT_MINIMAP_3D_CONFIG.slabHeight,
+    wallHeight = DEFAULT_MINIMAP_3D_CONFIG.wallHeight,
+    cellFilter?: CellFilter,
+    drawnSides = new Set<string>(),
 ): THREE.BufferGeometry {
     if (!level.walls?.length) return new THREE.BufferGeometry();
     const { sceneMinX, sceneMinZ } = sceneBounds;
@@ -219,8 +231,11 @@ export function buildFloorWallsGeometry(
             const cx = sceneMinX + (c + 0.5) * gridSize;
             const cz = sceneMinZ + (r + 0.5) * gridSize;
 
-            for (const { bit, dx0, dz0, dx1, dz1, n } of WALL_DIRS) {
+            for (const { bit, dx0, dz0, dx1, dz1, n, sideKey } of WALL_DIRS) {
                 if (mask & bit) {
+                    const key = sideKey(r, c);
+                    if (drawnSides.has(key)) continue;
+                    drawnSides.add(key);
                     const x0 = cx + dx0 * gridSize, z0 = cz + dz0 * gridSize;
                     const x1 = cx + dx1 * gridSize, z1 = cz + dz1 * gridSize;
                     pushQuad(pos, norm, idx, [x0, yBot, z0], [x1, yBot, z1], [x1, yTop, z1], [x0, yTop, z0], n);
@@ -242,12 +257,13 @@ export function buildFloorWallEdgesGeometry(
     level: FloorLevel,
     sceneBounds: { sceneMinX: number; sceneMinZ: number },
     gridSize: number,
-    wallHeight = 2.2
+    wallHeight = DEFAULT_MINIMAP_3D_CONFIG.wallHeight
 ): THREE.BufferGeometry {
     if (!level.walls?.length) return new THREE.BufferGeometry();
     const { sceneMinX, sceneMinZ } = sceneBounds;
-    const yTop = level.floorY + wallHeight;
+    const yTop = level.floorY + wallHeight + WALL_EDGE_LIFT;
     const pos: number[] = [];
+    const drawnSides = new Set<string>();
 
     for (let r = 0; r < level.walls.length; r++) {
         for (let c = 0; c < (level.walls[0]?.length ?? 0); c++) {
@@ -256,8 +272,11 @@ export function buildFloorWallEdgesGeometry(
             const cx = sceneMinX + (c + 0.5) * gridSize;
             const cz = sceneMinZ + (r + 0.5) * gridSize;
 
-            for (const { bit, dx0, dz0, dx1, dz1 } of WALL_DIRS) {
+            for (const { bit, dx0, dz0, dx1, dz1, sideKey } of WALL_DIRS) {
                 if (mask & bit) {
+                    const key = sideKey(r, c);
+                    if (drawnSides.has(key)) continue;
+                    drawnSides.add(key);
                     pos.push(cx + dx0 * gridSize, yTop, cz + dz0 * gridSize, cx + dx1 * gridSize, yTop, cz + dz1 * gridSize);
                 }
             }
@@ -277,8 +296,8 @@ export function buildFloorWireframeGeometry(
     level: FloorLevel,
     sceneBounds: { sceneMinX: number; sceneMinZ: number },
     gridSize: number,
-    slabHeight = 0.05,
-    wallHeight = 2.2
+    slabHeight = DEFAULT_MINIMAP_3D_CONFIG.slabHeight,
+    wallHeight = DEFAULT_MINIMAP_3D_CONFIG.wallHeight
 ): THREE.BufferGeometry {
     const { sceneMinX, sceneMinZ } = sceneBounds;
     const rows = level.walkable.length, cols = level.walkable[0]?.length ?? 0;
@@ -559,14 +578,15 @@ export function createVRMinimap3D(
         const roomId = currentRoomId;
         const inRoom = (r: number, c: number) => level.roomIds[r]?.[c] === roomId;
         addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.slabGapRatio, inRoom), roomSlabMat, 5);
-        addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inRoom), roomWallMat, 6);
+        const roomWallSides = new Set<string>(); // a wall between the room and a neighbour is the room's
+        addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inRoom, roomWallSides), roomWallMat, 6);
 
         if (config.displayMode === 'roomAndNeighbours') {
             const neighbours = findRoomNeighbours(level, roomId);
             if (neighbours.size > 0) {
                 const inNeighbour = (r: number, c: number) => neighbours.has(level.roomIds[r]?.[c] ?? NO_ROOM);
                 addRoomHighlight(buildFloorSlabsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.slabGapRatio, inNeighbour), neighbourSlabMat, 4);
-                addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inNeighbour), neighbourWallMat, 5);
+                addRoomHighlight(buildFloorWallsGeometry(level, sceneBounds, gridSize, config.slabHeight, config.wallHeight, inNeighbour, roomWallSides), neighbourWallMat, 5);
             }
         }
         floor.group.add(roomHighlight);

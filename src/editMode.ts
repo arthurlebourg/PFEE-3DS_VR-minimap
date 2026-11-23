@@ -55,10 +55,13 @@ export const EDITABLE_PARAMS: EditableParam[] = [
     { key: 'corridorMinElongation', category: 'rooms', label: 'Corridor min elong.', min: 1.5, max: 15, step: 0.5 },
 ];
 
-/** One line of the config list: a category header, or a param of the open category */
+export type ConfigAction = 'save';
+
+/** One line of the config list: a category header, a param of the open category, or a button under the categories */
 export type ConfigRow =
     | { kind: 'category'; category: ParamCategory; label: string; count: number }
-    | { kind: 'param'; param: EditableParam };
+    | { kind: 'param'; param: EditableParam }
+    | { kind: 'action'; action: ConfigAction; label: string };
 
 export type EditPanel = 'config' | 'floors' | 'minimap3d';
 
@@ -75,6 +78,7 @@ export type EditPanel = 'config' | 'floors' | 'minimap3d';
  * @prop buildLabel current step of the running rebuild
  * @prop isDirty config changed since the last rebuild was started
  * @prop floors floor repositioning sub-state
+ * @prop lastSavedAt performance.now() of the last map save (0 = none), for the VR panel's feedback
  */
 export interface EditModeState {
     active: boolean;
@@ -88,6 +92,7 @@ export interface EditModeState {
     buildLabel: string;
     isDirty: boolean;
     floors: FloorAdjustState;
+    lastSavedAt: number;
 }
 
 /**
@@ -107,6 +112,7 @@ export function createEditMode(defaults: MinimapConfig, initialConfig: MinimapCo
         buildLabel: '',
         isDirty: false,
         floors: createFloorAdjustState(),
+        lastSavedAt: 0,
     };
 }
 
@@ -131,7 +137,8 @@ export function getRebuildAction(state: EditModeState): RebuildAction {
 }
 
 /**
- * Visible lines of the config list: every category header, with the params of the open one right below it
+ * Visible lines of the config list: every category header, with the params of the open one right below it,
+ * then the buttons (as on the desktop panel)
  */
 export function getConfigRows(state: EditModeState): ConfigRow[] {
     const rows: ConfigRow[] = [];
@@ -142,6 +149,7 @@ export function getConfigRows(state: EditModeState): ConfigRow[] {
             for (const param of params) rows.push({ kind: 'param', param });
         }
     }
+    rows.push({ kind: 'action', action: 'save', label: 'Sauvegarder la carte' });
     return rows;
 }
 
@@ -196,11 +204,11 @@ function pressedEdge(gp: Gamepad, buttonIdx: number, prev: boolean): [fired: boo
  *  Right hand — A/X toggles edit mode on/off (any panel).
  *  Left hand (only while edit mode is active):
  *    - stick click : switch panel (config <-> floors)
- *    - X button    : save the current map to a file
  *    - Y button    : contextual — reset config to defaults, or cancel the pending floor move
  *  Right hand, panel = 'config':
- *    - stick up/down (no trigger)      : move the selection (category headers + params of the open one)
- *    - stick click                     : open/close the selected category (or the selected param's one)
+ *    - stick up/down (no trigger)      : move the selection (category headers + params of the open one + buttons)
+ *    - stick click                     : open/close the selected category (or the selected param's one),
+ *                                        or press the selected button (save the map to a file)
  *    - stick left/right + trigger held : adjust the selected param's value, or open (→) / close (←) a selected category
  *    - B/Y button                      : rebuild the minimap (raycast), see getRebuildAction
  *  Right hand, panel = 'floors':
@@ -211,7 +219,7 @@ function pressedEdge(gp: Gamepad, buttonIdx: number, prev: boolean): [fired: boo
  *
  * @param state edit mode state to mutate
  * @param onRebuildConfig called on right B/Y press while panel = 'config'
- * @param onSaveMap called on left X press while active
+ * @param onSaveMap called when the save button of the config panel is pressed, with a map to save
  * @param onConfirmFloorMove called on right B/Y press while panel = 'floors'
  * @param getMapContext returns the current floor count + grid size, needed for floor selection/nudging
  * @return update function to call every frame with the current session + deltaTime
@@ -227,7 +235,6 @@ export function createEditModeInputHandler(
     let prevPanelSwitch = false;
     let prevRightB = false;
     let prevRightStickClick = false;
-    let prevLeftX = false;
     let prevLeftY = false;
     let lastSelectAt = 0;
     let lastHorizStepAt = 0;
@@ -247,7 +254,6 @@ export function createEditModeInputHandler(
         if (!state.active) {
             prevRightB = false;
             prevRightStickClick = false;
-            prevLeftX = false;
             prevLeftY = false;
             prevPanelSwitch = false;
             return;
@@ -257,10 +263,6 @@ export function createEditModeInputHandler(
             const [switchPanel, switchHeld] = pressedEdge(leftGp, 3, prevPanelSwitch);
             if (switchPanel) state.panel = state.panel === 'config' ? 'floors' : 'config';
             prevPanelSwitch = switchHeld;
-
-            const [save, saveHeld] = pressedEdge(leftGp, 4, prevLeftX);
-            if (save) onSaveMap();
-            prevLeftX = saveHeld;
 
             const [secondary, secondaryHeld] = pressedEdge(leftGp, 5, prevLeftY);
             if (secondary) {
@@ -285,11 +287,19 @@ export function createEditModeInputHandler(
             prevRightB = rebuildHeld;
 
             const row = getSelectedRow(state);
-            const rowCategory = row.kind === 'category' ? row.category : row.param.category;
 
-            const [categoryToggle, categoryToggleHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
-            if (categoryToggle) toggleCategory(state, rowCategory);
-            prevRightStickClick = categoryToggleHeld;
+            const [stickClick, stickClickHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
+            if (stickClick) {
+                if (row.kind === 'action') {
+                    if (getMapContext().levelCount > 0) {
+                        onSaveMap();
+                        state.lastSavedAt = now;
+                    }
+                } else {
+                    toggleCategory(state, row.kind === 'category' ? row.category : row.param.category);
+                }
+            }
+            prevRightStickClick = stickClickHeld;
 
             if (!triggerHeld && Math.abs(stickY) > SELECT_THRESHOLD && now - lastSelectAt > SELECT_COOLDOWN_MS) {
                 selectNextRow(state, stickY > 0 ? 1 : -1);

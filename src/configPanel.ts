@@ -594,6 +594,33 @@ export function renderConfigPanel(
 
 const CATEGORY_ROW_H = 20;
 const PARAM_ROW_H = 22;
+const ACTION_ROW_H = 30;
+// How long the save button reads "saved" after a save
+const SAVED_FEEDBACK_MS = 2000;
+
+/** Save button of the VR config list, below the categories: greyed without a map, "saved" for a moment after a save */
+function drawSaveButton(
+    ctx: CanvasRenderingContext2D, state: EditModeState, map: MapContext,
+    y: number, h: number, canvasSize: number, isSelected: boolean,
+): void {
+    const enabled = map.levelCount > 0;
+    const justSaved = state.lastSavedAt > 0 && performance.now() - state.lastSavedAt < SAVED_FEEDBACK_MS;
+    const x = 12, w = canvasSize - 24, top = y + 5, height = h - 8;
+
+    ctx.fillStyle = !enabled ? '#2a2a2a' : justSaved ? '#1f6b3a' : isSelected ? '#2668a6' : '#24384d';
+    ctx.fillRect(x, top, w, height);
+    if (isSelected) {
+        ctx.strokeStyle = '#ffc83c';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 1, top + 1, w - 2, height - 2);
+    }
+
+    ctx.fillStyle = enabled ? '#fff' : '#666';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    const label = !enabled ? 'Aucune carte à sauvegarder' : justSaved ? 'Carte sauvegardée ✓' : 'Sauvegarder la carte';
+    ctx.fillText(label, canvasSize / 2, top + height / 2 + 4);
+}
 
 /**
  * Draw the config-tuning panel: category headers with the params of the open one, scrolled to keep
@@ -614,7 +641,7 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
 
     const rows = getConfigRows(state);
     const selected = Math.min(state.selectedRow, rows.length - 1);
-    const heights = rows.map(row => row.kind === 'category' ? CATEGORY_ROW_H : PARAM_ROW_H);
+    const heights = rows.map(row => row.kind === 'param' ? PARAM_ROW_H : row.kind === 'action' ? ACTION_ROW_H : CATEGORY_ROW_H);
     const tops: number[] = [];
     let contentH = 0;
     for (const h of heights) { tops.push(contentH); contentH += h; }
@@ -633,9 +660,14 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
         if (y + h < listTop || y > listBottom) return;
         const isSelected = idx === selected;
 
-        if (isSelected) {
+        if (isSelected && row.kind !== 'action') {
             ctx.fillStyle = 'rgba(255,200,60,0.2)';
             ctx.fillRect(6, y + 1, canvasSize - 12, h - 2);
+        }
+
+        if (row.kind === 'action') {
+            drawSaveButton(ctx, state, map, y, h, canvasSize, isSelected);
+            return;
         }
 
         if (row.kind === 'category') {
@@ -678,9 +710,9 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
     if (scroll > 0) ctx.fillText('▲', canvasSize / 2, listTop + 7);
     if (scroll < contentH - viewH) ctx.fillText('▼', canvasSize / 2, listBottom - 1);
 
-    ctx.fillText('droite: ↕ sélection · clic stick ouvre/ferme', canvasSize / 2, canvasSize - 48);
+    ctx.fillText('droite: ↕ sélection · clic stick ouvre/valide', canvasSize / 2, canvasSize - 48);
     ctx.fillText('trigger+↔ ajuste · B rebuild', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('gauche: clic stick onglet · X save · Y défauts', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('gauche: clic stick onglet · Y défauts', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty || map.levelCount === 0 ? '#ff8844' : '#55ff88';
@@ -796,7 +828,7 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
     ctx.fillStyle = '#888';
     ctx.fillText('droite: stick ↕ sélection · stick-clic axe', canvasSize / 2, canvasSize - 48);
     ctx.fillText('trigger+stick déplace · B confirme', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('gauche: clic stick onglet · X save · Y annule', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('gauche: clic stick onglet · Y annule', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = hasPendingPreview(state.floors) ? '#ff8844' : '#55ff88';
