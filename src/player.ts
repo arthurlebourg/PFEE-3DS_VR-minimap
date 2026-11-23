@@ -29,7 +29,7 @@ export function updateMovement(
 // Eye height used when the XR reference space doesn't provide the user's real one
 const DEFAULT_EYE_HEIGHT = 1.65;
 // Under this, the headset Y isn't a real eye height: the reference space origin is at the head ('local'), not on the floor ('local-floor')
-const MIN_REAL_EYE_HEIGHT = 0.5;
+export const MIN_REAL_EYE_HEIGHT = 0.5;
 
 /**
  * Move the player so the headset (not the player origin) stands at (x, z) on the floor at floorY.

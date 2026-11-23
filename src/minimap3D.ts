@@ -34,6 +34,10 @@ export interface Minimap3DConfig {
     handOffset: THREE.Vector3;
     /** In VR: rotation relative to the left controller grip, +X pitch tilts the base towards the user */
     handRotation: THREE.Euler;
+    /** In VR, zoomed in (left trigger held): size multiplier of the maquette */
+    handZoomScale: number;
+    /** In VR, zoomed in: position relative to the left controller grip, higher and further so the bigger maquette clears the hand */
+    handZoomOffset: THREE.Vector3;
     /** Color of the active floor slabs */
     activeColor: number;
     /** Opacity of the active floor slabs */
@@ -67,6 +71,8 @@ export const DEFAULT_MINIMAP_3D_CONFIG: Minimap3DConfig = {
     wristTiltAngle: THREE.MathUtils.degToRad(55),
     handOffset: new THREE.Vector3(0, 0.07, -0.05),
     handRotation: new THREE.Euler(THREE.MathUtils.degToRad(25), 0, 0),
+    handZoomScale: 2.5,
+    handZoomOffset: new THREE.Vector3(0, 0.14, -0.12),
     activeColor: 0x00f0ff,
     activeOpacity: 0.85,
     wallColor: 0xd0f0ff,
@@ -119,6 +125,11 @@ export interface VRMinimap3D {
      * @param mount 'head': camera HUD pose (wristOffset / wristRotation), 'hand': controller pose (handOffset / handRotation)
      */
     attachTo: (newParent: THREE.Object3D, mount?: MinimapMount) => void;
+    /**
+     * Zoom of the maquette held in the hand, from its normal size (0) to handZoomScale (1). No effect on the camera HUD
+     * @param amount in [0, 1], animate it for a smooth zoom
+     */
+    setHandZoom: (amount: number) => void;
     setVisible: (visible: boolean) => void;
     dispose: () => void;
 }
@@ -485,6 +496,7 @@ export function createVRMinimap3D(
     root.rotation.copy(config.wristRotation);
     parent.add(root);
     let mount: MinimapMount = 'head';
+    let handZoom = 0;
 
     const buildingContainer = new THREE.Group();
     const pedestalGroup = new THREE.Group();
@@ -750,6 +762,15 @@ export function createVRMinimap3D(
             mount = newMount;
             root.position.copy(mount === 'hand' ? config.handOffset : config.wristOffset);
             root.rotation.copy(mount === 'hand' ? config.handRotation : config.wristRotation);
+            root.scale.setScalar(1);
+            handZoom = 0;
+        },
+
+        setHandZoom: (amount: number) => {
+            if (mount !== 'hand' || amount === handZoom) return;
+            handZoom = amount;
+            root.position.lerpVectors(config.handOffset, config.handZoomOffset, amount);
+            root.scale.setScalar(THREE.MathUtils.lerp(1, config.handZoomScale, amount));
         },
 
         setVisible: (visible: boolean) => {

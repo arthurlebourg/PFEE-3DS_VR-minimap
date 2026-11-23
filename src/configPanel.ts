@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { EditModeState } from './editMode.js';
+import type { EditModeState, EditPanel } from './editMode.js';
 import { HUD_RENDER_ORDER } from './minimap.js';
 import { EDITABLE_PARAMS, PARAM_CATEGORIES, type ParamCategory, getConfigRows, getRebuildAction, resetToDefaults, toggleCategory } from './editMode.js';
 import {
@@ -605,10 +605,7 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-    ctx.fillStyle = '#ffee44';
-    ctx.font = 'bold 14px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('EDIT MODE — Config', canvasSize / 2, 20);
+    drawPanelTabs(ctx, state.panel, canvasSize);
 
     // List viewport, between the title and the key hints
     const listTop = 30;
@@ -683,7 +680,7 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
 
     ctx.fillText('droite: ↕ sélection · clic stick ouvre/ferme', canvasSize / 2, canvasSize - 48);
     ctx.fillText('trigger+↔ ajuste · B rebuild', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('gauche: clic stick étages · X save · Y défauts', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('gauche: clic stick onglet · X save · Y défauts', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty || map.levelCount === 0 ? '#ff8844' : '#55ff88';
@@ -710,6 +707,33 @@ function rebuildStatusText(state: EditModeState, map: MapContext): string {
     }
 }
 
+// Tabs of the VR panel, cycled by the left stick click (the minimap 3D tab is desktop only)
+const VR_PANEL_TABS: { panel: EditPanel; label: string }[] = [
+    { panel: 'config', label: 'Config' },
+    { panel: 'floors', label: 'Étages' },
+];
+
+/** Tab bar at the top of the VR panel: every tab, the shown one highlighted */
+function drawPanelTabs(ctx: CanvasRenderingContext2D, active: EditPanel, canvasSize: number): void {
+    const margin = 6, gap = 4, top = 5, height = 19;
+    const width = (canvasSize - 2 * margin - gap * (VR_PANEL_TABS.length - 1)) / VR_PANEL_TABS.length;
+
+    ctx.textAlign = 'center';
+    VR_PANEL_TABS.forEach(({ panel, label }, i) => {
+        const x = margin + i * (width + gap);
+        const isActive = panel === active;
+        ctx.fillStyle = isActive ? '#2668a6' : '#2a2a2a';
+        ctx.fillRect(x, top, width, height);
+        if (isActive) {
+            ctx.fillStyle = '#ffee44';
+            ctx.fillRect(x, top + height - 2, width, 2);
+        }
+        ctx.fillStyle = isActive ? '#fff' : '#888';
+        ctx.font = `${isActive ? 'bold ' : ''}12px monospace`;
+        ctx.fillText(label, x + width / 2, top + 14);
+    });
+}
+
 // Draw the floor-repositioning panel: floor list with the active one highlighted, axis + delta info
 function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCanvasElement, canvasSize: number): void {
     const ctx = prepareCanvas(canvas, canvasSize);
@@ -717,10 +741,7 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-    ctx.fillStyle = '#ffee44';
-    ctx.font = 'bold 14px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText('EDIT MODE — Étages', canvasSize / 2, 20);
+    drawPanelTabs(ctx, state.panel, canvasSize);
 
     const rowH = 22;
     const startY = 36;
@@ -775,7 +796,7 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
     ctx.fillStyle = '#888';
     ctx.fillText('droite: stick ↕ sélection · stick-clic axe', canvasSize / 2, canvasSize - 48);
     ctx.fillText('trigger+stick déplace · B confirme', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('gauche: stick-clic config · X save · Y annule', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('gauche: clic stick onglet · X save · Y annule', canvasSize / 2, canvasSize - 28);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = hasPendingPreview(state.floors) ? '#ff8844' : '#55ff88';

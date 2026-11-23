@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { loadGLB } from './glbLoader.js';
-import { createPlayer, updateMovement, placePlayerOnFloor, snapTurn, getFeetY } from './player.js';
+import { createPlayer, updateMovement, placePlayerOnFloor, snapTurn, getFeetY, MIN_REAL_EYE_HEIGHT } from './player.js';
 import {
     saveSceneMapAsFile, loadSceneMapFromFile,
     type SceneMap, type MinimapConfig, type FloorLevel,
@@ -20,21 +20,40 @@ import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type 
 import { createLoadingBar } from './loadingBar.js';
 import { createStartScreen, type StartSelection } from './startScreen.js';
 
-// Immersive Web Emulator: its polyfilled XRSession can't be bound by the browser's native XRWebGLBinding
-// ("Failed to construct 'XRWebGLBinding'"), so three must fall back to an XRWebGLLayer there.
-// Only under the emulator: on a real headset (Quest browser, PC + Link) removing it while three's VRButton
-// requests the 'layers' feature gives a black screen in VR
-const xrIsPolyfilled = !!navigator.xr && !/\[native code\]/.test(Function.prototype.toString.call(navigator.xr.requestSession));
-if (xrIsPolyfilled && 'XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
-
 // Renderer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.xr.enabled = true;
+fallBackToWebGLLayerWhenBindingFails(renderer);
 renderer.xr.cameraAutoUpdate = false;
 renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
+
+/**
+ * three renders VR into an XRProjectionLayer through an XRWebGLBinding when the browser has one. The Immersive Web
+ * Emulator hands out sessions the browser's XRWebGLBinding refuses ("Failed to construct 'XRWebGLBinding'"):
+ * for those, three is made to take its XRWebGLLayer path instead. Tested on the session itself, as the emulator's
+ * extension wraps navigator.xr even when it lets a real headset through (Chrome + Link), which needs the binding
+ */
+function fallBackToWebGLLayerWhenBindingFails(renderer: THREE.WebGLRenderer): void {
+    if (typeof XRWebGLBinding === 'undefined') return;
+    const setSession = renderer.xr.setSession.bind(renderer.xr);
+    renderer.xr.setSession = async (session: XRSession | null) => {
+        if (session && 'createProjectionLayer' in XRWebGLBinding.prototype) {
+            const gl = renderer.getContext();
+            try {
+                await gl.makeXRCompatible();
+                new XRWebGLBinding(session, gl);
+            } catch (e) {
+                console.warn('XRWebGLBinding refused this session (WebXR emulator?), rendering through an XRWebGLLayer:', e);
+                // three checks for this method when a session starts to choose between the two
+                delete (XRWebGLBinding.prototype as unknown as Record<string, unknown>).createProjectionLayer;
+            }
+        }
+        return setSession(session);
+    };
+}
 
 // Scene
 const scene = new THREE.Scene();
@@ -393,12 +412,24 @@ renderer.xr.addEventListener('sessionstart', () => {
     camera.position.set(0, 0, 0);
     player.rotation.set(0, 0, 0);
     spawnPending = true;
+    spawnWaitFrames = 0;
 });
+
+// Headset poses can start before the tracking (at the origin, or emulated): placing the player on one of those puts
+// the eyes a whole eye height too high once the real pose comes. Waits for a tracked pose at eye height, at most this
+// many frames (with a 'local' reference space the head stays near y = 0)
+const SPAWN_MAX_WAIT_FRAMES = 90;
+let spawnWaitFrames = 0;
 
 function trySpawn(): void {
     const frame = renderer.xr.getFrame();
     const refSpace = renderer.xr.getReferenceSpace();
-    if (!frame || !refSpace || !frame.getViewerPose(refSpace)) return;
+    const pose = frame && refSpace ? frame.getViewerPose(refSpace) : null;
+    if (!pose) return;
+    spawnWaitFrames++;
+    const poseIsReal = !pose.emulatedPosition && camera.position.y > MIN_REAL_EYE_HEIGHT;
+    if (!poseIsReal && spawnWaitFrames < SPAWN_MAX_WAIT_FRAMES) return;
+    console.log(`Spawn: headset at y=${camera.position.y.toFixed(2)} m in the reference space after ${spawnWaitFrames} frames`);
 
     const level = currentLevel();
     if (level) {
@@ -508,6 +539,24 @@ function updateSnapTurn(): void {
     }
 }
 
+// Left trigger held: the minimap in the left hand grows (and comes up off the hand), back on release
+const MINIMAP_ZOOM_SPEED = 8; // per second, ~0.3 s to zoom in or out
+let minimapZoom = 0;
+
+function updateMinimapZoom(deltaTime: number): void {
+    const session = renderer.xr.getSession();
+    let held = false;
+    if (session) {
+        for (const source of session.inputSources) {
+            if (source.handedness === 'left' && source.gamepad) held = (source.gamepad.buttons[0]?.value ?? 0) > 0.5;
+        }
+    }
+    const target = held ? 1 : 0;
+    minimapZoom += (target - minimapZoom) * Math.min(1, deltaTime * MINIMAP_ZOOM_SPEED);
+    if (Math.abs(target - minimapZoom) < 0.001) minimapZoom = target;
+    vrMinimap3D?.setHandZoom(minimapZoom);
+}
+
 // left Y / X buttons move the player up / down in absolute terms, not between floors.
 // Disabled in edit mode, where those buttons save / reset
 const DEBUG_VERTICAL_SPEED = 0.03;
@@ -568,6 +617,7 @@ renderer.setAnimationLoop(() => {
 
     updateVRMinimapToggleInput();
     updateSnapTurn();
+    updateMinimapZoom(timer.getDelta());
 
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
