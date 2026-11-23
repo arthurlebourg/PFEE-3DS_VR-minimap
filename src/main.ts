@@ -8,13 +8,14 @@ import {
     type SceneMap, type MinimapConfig, type FloorLevel,
 } from './minimap.js';
 import { createFloorManager, updateFloorManager, getActiveFloorIdx, syncFloorWithHeight } from './floorManager.js';
-import { createVRMinimap3D, MINIMAP_DISPLAY_MODES, type VRMinimap3D } from './minimap3D.ts';
+import { createVRMinimap3D, MINIMAP_DISPLAY_MODES, type MinimapDisplayMode, type VRMinimap3D } from './minimap3D.ts';
 import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
 import { createEditMode, createEditModeInputHandler, getRebuildAction, setCategoryOpen } from './editMode.js';
 import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
-import { commitFloorMove, type MapContext } from './floorAdjust.js';
+import { commitFloorMove, hasPendingPreview, type MapContext } from './floorAdjust.js';
+import { createFeedback } from './feedback.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
 import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type HistogramHud } from './histogramPanel.js';
 import { createLoadingBar } from './loadingBar.js';
@@ -131,6 +132,9 @@ camera.add(hudMinimapAnchor);
 // Moved onto the grip of the controller in that hand once it connects (the controller index doesn't tell the hand)
 const handAnchors = { left: new THREE.Group(), right: new THREE.Group() };
 
+// Vibration + short message above the hand for what the VR controls do
+const feedback = createFeedback(renderer.xr, scene, handAnchors);
+
 let vrMinimap3D: VRMinimap3D | null = null;
 let hudMinimapVisible = true;
 
@@ -150,7 +154,14 @@ function toggleMinimap3D(): void {
     hudMinimapVisible = !hudMinimapVisible;
     hudMinimapAnchor.visible = hudMinimapVisible;
     if (vrMinimap3D) vrMinimap3D.setVisible(hudMinimapVisible);
+    feedback.notify('left', 'tick', hudMinimapVisible ? 'Minimap affichée' : 'Minimap masquée');
 }
+
+const MINIMAP_DISPLAY_MODE_LABELS: Record<MinimapDisplayMode, string> = {
+    solid: 'pleine',
+    room: 'pièce',
+    roomAndNeighbours: 'pièce + voisines',
+};
 
 // solid -> room -> room and neighbours -> solid
 function cycleMinimapDisplayMode(): void {
@@ -158,6 +169,7 @@ function cycleMinimapDisplayMode(): void {
     const next = MINIMAP_DISPLAY_MODES[(MINIMAP_DISPLAY_MODES.indexOf(vrMinimap3D.getDisplayMode()) + 1) % MINIMAP_DISPLAY_MODES.length];
     vrMinimap3D.setDisplayMode(next);
     console.log(`Minimap 3D display: ${next}`);
+    feedback.notify('left', 'tick', `Vue : ${MINIMAP_DISPLAY_MODE_LABELS[next]}`);
 }
 
 // Floor state
@@ -246,10 +258,12 @@ async function rebuildMinimap(): Promise<void> {
         built.map.modelSha1 = modelSha1;
         built.map.histogram = built.histogram;
         applyMap(built.map, built.histogram);
+        feedback.notify('right', 'done', 'Carte prête');
     } catch (e) {
         if (controller.signal.aborted) return; // restarted or cancelled
         console.error('Minimap build failed:', e);
         editMode.isDirty = true;
+        feedback.notify('right', 'refused', 'Échec du calcul');
     } finally {
         if (buildController === controller) {
             buildController = null;
@@ -271,7 +285,9 @@ function cancelBuild(): void {
 
 /** Rebuild button of the VR panel: build, restart with the edited config, or stop */
 function onRebuildButton(): void {
-    if (getRebuildAction(editMode) === 'cancel') cancelBuild();
+    const action = getRebuildAction(editMode);
+    feedback.notify('right', 'done', action === 'cancel' ? 'Calcul arrêté' : action === 'restart' ? 'Calcul relancé' : 'Calcul de la carte lancé');
+    if (action === 'cancel') cancelBuild();
     else void rebuildMinimap();
 }
 
@@ -301,8 +317,13 @@ function confirmFloorMove(): void {
     if (!sceneMap) return;
     const level = sceneMap.levels[editMode.floors.selectedFloorIdx];
     if (!level) return;
+    if (!hasPendingPreview(editMode.floors)) {
+        feedback.notify('right', 'refused', 'Rien à confirmer');
+        return;
+    }
 
     commitFloorMove(editMode.floors, level, sceneMap.gridSize);
+    feedback.notify('right', 'done', `Étage ${level.id} déplacé`);
 
     recreateDebugOverlay();
     disposeFloorMoveVisual();
@@ -328,7 +349,7 @@ function ensureFloorMoveVisual(): void {
 }
 
 const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, cancelBuild, saveMinimap, confirmFloorMove, getMapContext, () => vrMinimap3D);
-const editModeInputUpdate = createEditModeInputHandler(editMode, onRebuildButton, saveMinimap, confirmFloorMove, getMapContext);
+const editModeInputUpdate = createEditModeInputHandler(editMode, onRebuildButton, saveMinimap, confirmFloorMove, getMapContext, feedback.notify);
 const desktopHistogramPanel = createDesktopHistogramPanel();
 
 // Player
@@ -527,19 +548,22 @@ function updateSnapTurn(): void {
     }
 }
 
-// Left trigger held: the minimap in the left hand grows (and comes up off the hand), back on release
+// Left grip held: the minimap in the left hand grows (and comes up off the hand), back on release
 const MINIMAP_ZOOM_SPEED = 8; // per second, ~0.3 s to zoom in or out
 let minimapZoom = 0;
+let minimapZoomHeld = false;
 
 function updateMinimapZoom(deltaTime: number): void {
     const session = renderer.xr.getSession();
     let held = false;
     if (session) {
         for (const source of session.inputSources) {
-            if (source.handedness === 'left' && source.gamepad) held = (source.gamepad.buttons[0]?.value ?? 0) > 0.5;
+            if (source.handedness === 'left' && source.gamepad) held = (source.gamepad.buttons[1]?.value ?? 0) > 0.5;
         }
     }
     const target = held ? 1 : 0;
+    if (held && !minimapZoomHeld) feedback.notify('left', 'tick');
+    minimapZoomHeld = held;
     minimapZoom += (target - minimapZoom) * Math.min(1, deltaTime * MINIMAP_ZOOM_SPEED);
     if (Math.abs(target - minimapZoom) < 0.001) minimapZoom = target;
     vrMinimap3D?.setHandZoom(minimapZoom);
@@ -608,9 +632,14 @@ renderer.setAnimationLoop(() => {
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
     if (!editMode.active && sceneMap && sceneMap.levels.length > 0) {
-        updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera);
+        updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera, feedback.notify);
         // the floor shown is the one under the feet, whichever way the player got there (stairs, Y / X)
-        if (renderer.xr.isPresenting && !spawnPending) syncFloorWithHeight(floorState, sceneMap, getFeetY(player));
+        if (renderer.xr.isPresenting && !spawnPending) {
+            const floorBefore = floorState.curFloorIdx;
+            syncFloorWithHeight(floorState, sceneMap, getFeetY(player));
+            const level = sceneMap.levels[floorState.curFloorIdx];
+            if (floorState.curFloorIdx !== floorBefore && level) feedback.notify('left', 'tick', `Étage ${level.id}`);
+        }
     }
 
     if (vrMinimap3D && sceneMap) {
@@ -646,6 +675,7 @@ renderer.setAnimationLoop(() => {
     if (editMode.active) renderHistogram(histogram, levels, desktopHistogramPanel.canvas);
 
     desktopConfigPanel.sync();
+    feedback.update(camera);
 
     renderer.render(scene, camera);
 });
@@ -657,7 +687,7 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Left hand = the minimap, in every mode: stick click shows / hides it, grip changes its display mode.
+// Left hand = the minimap, in every mode: stick click shows / hides it, trigger changes its display mode.
 // Right grip shows / hides the debug grid of the floors in the scene ('h' on desktop), edit mode included
 let lastVRMinimapBtnState = false;
 let lastVRDisplayModeBtnState = false;
@@ -673,12 +703,15 @@ function updateVRMinimapToggleInput(): void {
             if (stickClicked && !lastVRMinimapBtnState) toggleMinimap3D();
             lastVRMinimapBtnState = stickClicked;
 
-            const gripPressed = gp.buttons[1]?.pressed ?? false;
-            if (gripPressed && !lastVRDisplayModeBtnState) cycleMinimapDisplayMode();
-            lastVRDisplayModeBtnState = gripPressed;
+            const triggerPressed = gp.buttons[0]?.pressed ?? false;
+            if (triggerPressed && !lastVRDisplayModeBtnState) cycleMinimapDisplayMode();
+            lastVRDisplayModeBtnState = triggerPressed;
         } else if (source.handedness === 'right') {
             const gripPressed = gp.buttons[1]?.pressed ?? false;
-            if (gripPressed && !lastVRDebugGridBtnState) toggleDebugOverlay();
+            if (gripPressed && !lastVRDebugGridBtnState) {
+                toggleDebugOverlay();
+                feedback.notify('right', 'tick', debugOverlayVisible ? 'Grille de debug affichée' : 'Grille de debug masquée');
+            }
             lastVRDebugGridBtnState = gripPressed;
         }
     }

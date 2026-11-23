@@ -28,8 +28,8 @@ export function getControlHints(hand: Hand, ctx: ControlContext): ControlHints {
 function leftHints(): ControlHints {
     return {
         thumbstick: 'Se déplacer · clic : minimap',
-        trigger: 'Maintenir : zoom minimap',
-        squeeze: 'Vue minimap (pleine / pièce / voisines)',
+        trigger: 'Vue minimap (pleine / pièce / voisines)',
+        squeeze: 'Maintenir : zoom minimap',
         x: 'Descendre',
         y: 'Monter',
     };

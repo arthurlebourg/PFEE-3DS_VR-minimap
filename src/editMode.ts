@@ -3,6 +3,7 @@ import {
     type FloorAdjustState, type MapContext, createFloorAdjustState,
     selectNextFloor, toggleAxisMode, nudgeVertical, nudgeHorizontal, cancelPreview, hasPendingPreview,
 } from './floorAdjust.js';
+import { noFeedback, type Notify } from './feedback.js';
 
 export type ParamCategory = 'general' | 'floors' | 'walls' | 'stairs' | 'rooms';
 
@@ -233,6 +234,7 @@ function pressedEdge(gp: Gamepad, buttonIdx: number, prev: boolean): [fired: boo
  * @param onSaveMap called when the save button of the config panel is pressed, with a map to save
  * @param onConfirmFloorMove called on right B press while panel = 'floors'
  * @param getMapContext returns the current floor count + grid size, needed for floor selection/nudging
+ * @param notify feedback (vibration, message) of what the input did
  * @return update function to call every frame with the current session + deltaTime
  */
 export function createEditModeInputHandler(
@@ -241,6 +243,7 @@ export function createEditModeInputHandler(
     onSaveMap: () => void,
     onConfirmFloorMove: () => void,
     getMapContext: () => MapContext,
+    notify: Notify = noFeedback,
 ): (session: XRSession | null, deltaTime: number) => void {
     let prevToggle = false;
     let prevRightB = false;
@@ -253,14 +256,23 @@ export function createEditModeInputHandler(
         switch (action) {
             case 'reset':
                 resetToDefaults(state);
+                notify('right', 'done', 'Valeurs par défaut rétablies');
                 break;
             case 'save':
-                if (getMapContext().levelCount === 0) return;
+                if (getMapContext().levelCount === 0) {
+                    notify('right', 'refused', 'Aucune carte à sauvegarder');
+                    return;
+                }
                 onSaveMap();
+                notify('right', 'done', 'Carte sauvegardée');
                 break;
             case 'cancelFloorMove':
-                if (!hasPendingPreview(state.floors)) return;
+                if (!hasPendingPreview(state.floors)) {
+                    notify('right', 'refused', 'Rien à annuler');
+                    return;
+                }
                 cancelPreview(state.floors);
+                notify('right', 'done', 'Déplacement annulé');
                 break;
         }
         state.actionFlash = { action, at: now };
@@ -273,7 +285,10 @@ export function createEditModeInputHandler(
         if (!rightGp) return;
 
         const [toggled, toggleHeld] = pressedEdge(rightGp, 4, prevToggle);
-        if (toggled) state.active = !state.active;
+        if (toggled) {
+            state.active = !state.active;
+            notify('right', 'tick', state.active ? 'Mode édition' : 'Édition fermée');
+        }
         prevToggle = toggleHeld;
 
         if (!state.active) {
@@ -292,7 +307,9 @@ export function createEditModeInputHandler(
 
         // Tabs: one switch per push, the stick has to come back near the centre before the next one
         if (!triggerHeld && horizontal && tabSwitchArmed && Math.abs(stickX) > SELECT_THRESHOLD) {
-            state.panel = stickX > 0 ? 'floors' : 'config';
+            const panel = stickX > 0 ? 'floors' : 'config';
+            if (panel !== state.panel) notify('right', 'tick');
+            state.panel = panel;
             tabSwitchArmed = false;
         } else if (Math.abs(stickX) < TAB_SWITCH_REARM) {
             tabSwitchArmed = true;
@@ -310,18 +327,25 @@ export function createEditModeInputHandler(
 
             const [stickClick, stickClickHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
             if (stickClick) {
-                if (row.kind === 'action') press(row.action, now);
-                else toggleCategory(state, row.kind === 'category' ? row.category : row.param.category);
+                if (row.kind === 'action') {
+                    press(row.action, now);
+                } else {
+                    toggleCategory(state, row.kind === 'category' ? row.category : row.param.category);
+                    notify('right', 'tick');
+                }
             }
             prevRightStickClick = stickClickHeld;
 
             if (selecting) {
                 selectNextRow(state, stickY > 0 ? 1 : -1);
+                notify('right', 'tick');
                 lastSelectAt = now;
             }
 
             if (triggerHeld && row.kind === 'category' && Math.abs(stickX) > SELECT_THRESHOLD) {
-                setCategoryOpen(state, row.category, stickX > 0);
+                const open = stickX > 0;
+                if ((state.openCategory === row.category) !== open) notify('right', 'tick');
+                setCategoryOpen(state, row.category, open);
             } else if (triggerHeld && row.kind === 'param' && Math.abs(stickX) > ADJUST_THRESHOLD) {
                 const { param } = row;
                 const rangeSpeed = (param.max - param.min) * 0.3; // ~3.3s to cross the full range
@@ -335,8 +359,12 @@ export function createEditModeInputHandler(
 
             const [stickClick, stickClickHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
             if (stickClick) {
-                if (floors.cancelSelected) press('cancelFloorMove', now);
-                else toggleAxisMode(floors);
+                if (floors.cancelSelected) {
+                    press('cancelFloorMove', now);
+                } else {
+                    toggleAxisMode(floors);
+                    notify('right', 'tick', floors.axisMode === 'vertical' ? 'Axe : vertical' : 'Axe : horizontal');
+                }
             }
             prevRightStickClick = stickClickHeld;
 
@@ -347,6 +375,7 @@ export function createEditModeInputHandler(
             if (selecting && levelCount > 0) {
                 // The panel lists the floors top floor first, the cancel button under the lowest one. No wrapping:
                 // stick up (negative axis value) goes up the list
+                const before = `${floors.selectedFloorIdx} ${floors.cancelSelected}`;
                 if (stickY < 0) {
                     if (floors.cancelSelected) floors.cancelSelected = false; // back on the floor being moved, its preview kept
                     else if (floors.selectedFloorIdx < levelCount - 1) selectNextFloor(floors, levelCount, 1);
@@ -354,6 +383,7 @@ export function createEditModeInputHandler(
                     if (floors.selectedFloorIdx > 0) selectNextFloor(floors, levelCount, -1);
                     else floors.cancelSelected = true;
                 }
+                if (`${floors.selectedFloorIdx} ${floors.cancelSelected}` !== before) notify('right', 'tick');
                 lastSelectAt = now;
             }
 

@@ -36,7 +36,7 @@ export interface Minimap3DConfig {
     handOffset: THREE.Vector3;
     /** In VR: rotation relative to the left controller grip, +X pitch tilts the base towards the user */
     handRotation: THREE.Euler;
-    /** In VR, zoomed in (left trigger held): size multiplier of the maquette */
+    /** In VR, zoomed in (left grip held): size multiplier of the maquette */
     handZoomScale: number;
     /** In VR, zoomed in: position relative to the left controller grip, higher and further so the bigger maquette clears the hand */
     handZoomOffset: THREE.Vector3;

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 
 import type { SceneMap } from './minimap.js';
 import { placePlayerOnFloor } from './player.js';
+import { noFeedback, type Notify } from './feedback.js';
 
 // trigger value in [0,1]
 const TRIGGER_THRESHOLD = 0.5;
@@ -69,12 +70,17 @@ export function getActiveFloorIdx(state: FloorManagerState): number {
     return state.triggerHeld ? state.prevFloorIdx : state.curFloorIdx;
 }
 
+/**
+ * Right trigger held + stick up / down previews the floor above / below on the minimap, releasing the trigger goes there
+ * @param notify feedback in the right hand: the previewed floor changing, arriving on a floor, no floor that way
+ */
 export function updateFloorManager(
     state: FloorManagerState,
     map: SceneMap,
     session: XRSession | null,
     player: THREE.Group,
-    camera: THREE.Camera
+    camera: THREE.Camera,
+    notify: Notify = noFeedback,
 ): void {
     if (!session) return;
 
@@ -103,7 +109,9 @@ export function updateFloorManager(
             state.dir = 0;
 
         const target = state.curFloorIdx + state.dir;
-        state.prevFloorIdx = Math.max(0, Math.min(map.levels.length - 1, target));
+        const previewed = Math.max(0, Math.min(map.levels.length - 1, target));
+        if (previewed !== state.prevFloorIdx) notify('right', 'tick');
+        state.prevFloorIdx = previewed;
 
     } else if (wasHeld) {
         const target = state.curFloorIdx + state.dir;
@@ -113,9 +121,13 @@ export function updateFloorManager(
             const level = map.levels[target];
             placePlayerOnFloor(player, camera, level.spawnPoint.x, level.floorY, level.spawnPoint.z);
 
+            notify('right', 'done', `Étage ${level.id}`);
+
             // avoid spamming command
             state.isCoolingDown = true;
             setTimeout(() => { state.isCoolingDown = false; }, COOLDOWN_MS);
+        } else if (state.dir !== 0) {
+            notify('right', 'refused', state.dir > 0 ? 'Pas d\'étage au-dessus' : 'Pas d\'étage en dessous');
         }
         state.dir = 0;
         state.prevFloorIdx = state.curFloorIdx;
