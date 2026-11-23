@@ -20,8 +20,12 @@ import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type 
 import { createLoadingBar } from './loadingBar.js';
 import { createStartScreen, type StartSelection } from './startScreen.js';
 
-// Patch XRWebGLBinding bug
-if ('XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
+// Immersive Web Emulator: its polyfilled XRSession can't be bound by the browser's native XRWebGLBinding
+// ("Failed to construct 'XRWebGLBinding'"), so three must fall back to an XRWebGLLayer there.
+// Only under the emulator: on a real headset (Quest browser, PC + Link) removing it while three's VRButton
+// requests the 'layers' feature gives a black screen in VR
+const xrIsPolyfilled = !!navigator.xr && !/\[native code\]/.test(Function.prototype.toString.call(navigator.xr.requestSession));
+if (xrIsPolyfilled && 'XRWebGLBinding' in window) delete (window as any).XRWebGLBinding;
 
 // Renderer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
