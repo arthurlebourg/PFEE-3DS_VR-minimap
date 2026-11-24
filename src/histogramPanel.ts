@@ -22,10 +22,12 @@ export function renderHistogram(
     canvas: HTMLCanvasElement,
     width = HISTOGRAM_CANVAS_WIDTH,
     height = HISTOGRAM_CANVAS_HEIGHT,
+    pixelRatio = 1,
 ): void {
     const ctx = canvas.getContext('2d')!;
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = width * pixelRatio;
+    canvas.height = height * pixelRatio;
+    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, width, height);
@@ -73,7 +75,10 @@ export function renderHistogram(
     ctx.fillText(`${histogram[0].y.toFixed(1)}m`, marginLeft - 4, marginTop + plotH);
 }
 
-// VR HUD canvas texture on a plane on the right grip (just to the left of the edit mode panel)
+// VR canvas texture on a plane, left of the edit mode panel
+
+/** Canvas pixels per drawing unit in VR: the text stays sharp on the big panel */
+export const VR_HISTOGRAM_PIXEL_RATIO = 2;
 
 export interface HistogramHud {
     mesh: THREE.Mesh;
@@ -82,29 +87,30 @@ export interface HistogramHud {
     dispose: () => void;
 }
 
-export function createHistogramHud(grip: THREE.Object3D): HistogramHud {
+/**
+ * @param parent the plane is added at its origin, the caller places it
+ * @param height plane height in metres (the width follows the canvas)
+ */
+export function createHistogramHud(parent: THREE.Object3D, height: number): HistogramHud {
     const canvas = document.createElement('canvas');
-    canvas.width = HISTOGRAM_CANVAS_WIDTH;
-    canvas.height = HISTOGRAM_CANVAS_HEIGHT;
+    canvas.width = HISTOGRAM_CANVAS_WIDTH * VR_HISTOGRAM_PIXEL_RATIO;
+    canvas.height = HISTOGRAM_CANVAS_HEIGHT * VR_HISTOGRAM_PIXEL_RATIO;
 
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     const mesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.15, 0.15 * HISTOGRAM_CANVAS_HEIGHT / HISTOGRAM_CANVAS_WIDTH),
+        new THREE.PlaneGeometry(height * HISTOGRAM_CANVAS_WIDTH / HISTOGRAM_CANVAS_HEIGHT, height),
         new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false })
     );
-
-    // Same tilt as the config panel offset along local X to sit just to its left
-    mesh.position.set(-0.17, 0.05, -0.02);
-    mesh.rotation.set(-Math.PI / 2.5, 0, 0);
     mesh.renderOrder = HUD_RENDER_ORDER;
-    grip.add(mesh);
+    parent.add(mesh);
 
     return {
         mesh,
         texture,
         canvas,
         dispose: () => {
-            grip.remove(mesh);
+            parent.remove(mesh);
             mesh.geometry.dispose();
             (mesh.material as THREE.Material).dispose();
             texture.dispose();

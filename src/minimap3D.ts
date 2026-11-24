@@ -133,6 +133,13 @@ export interface VRMinimap3D {
      * @param amount in [0, 1], animate it for a smooth zoom
      */
     setHandZoom: (amount: number) => void;
+    /**
+     * Point of the shown floor under a ray (pointing at the maquette), null if the ray misses it or the maquette is hidden
+     * @return world: the hit on the maquette; model: the matching point of the model, its y on the floor (or sub-level)
+     */
+    pick: (raycaster: THREE.Raycaster) => { world: THREE.Vector3; model: THREE.Vector3 } | null;
+    /** Target marker on the maquette, at a world point from pick; null hides it */
+    setAimMarker: (worldPoint: THREE.Vector3 | null) => void;
     /** Draw the map's cells apart (debug) or the floors as continuous surfaces. Rebuilds the maquette on change */
     setGridVisible: (visible: boolean) => void;
     setVisible: (visible: boolean) => void;
@@ -520,6 +527,12 @@ function create3DPlayerMarker(config: Minimap3DConfig) {
     return { group, disposables };
 }
 
+/** The object and all its ancestors are visible */
+function isShown(object: THREE.Object3D): boolean {
+    for (let o: THREE.Object3D | null = object; o; o = o.parent) if (!o.visible) return false;
+    return true;
+}
+
 export function createVRMinimap3D(
     parent: THREE.Object3D,
     map: SceneMap,
@@ -538,6 +551,22 @@ export function createVRMinimap3D(
     const pedestalGroup = new THREE.Group();
     let playerMarker: THREE.Group = new THREE.Group();
     root.add(pedestalGroup, buildingContainer);
+
+    // Where the right controller points on the maquette (minimap navigation). In root space: its size doesn't
+    // depend on the building's scale. Drawn over the maquette
+    const AIM_MARKER_RADIUS = 0.005; // m, before zoom
+    const aimMarker = new THREE.Group();
+    aimMarker.name = 'minimap-aim-marker';
+    const aimRingMat = new THREE.MeshBasicMaterial({ color: 0xffee44, transparent: true, depthTest: false, side: THREE.DoubleSide });
+    const aimRing = new THREE.Mesh(new THREE.RingGeometry(AIM_MARKER_RADIUS * 0.6, AIM_MARKER_RADIUS, 24), aimRingMat);
+    aimRing.rotation.x = -Math.PI / 2;
+    const aimDot = new THREE.Mesh(new THREE.CircleGeometry(AIM_MARKER_RADIUS * 0.25, 12), aimRingMat);
+    aimDot.rotation.x = -Math.PI / 2;
+    aimRing.renderOrder = aimDot.renderOrder = 20;
+    aimMarker.add(aimRing, aimDot);
+    aimMarker.visible = false;
+    root.add(aimMarker);
+    const pickHits: THREE.Intersection[] = [];
 
     const slabMat = new THREE.MeshBasicMaterial({ color: config.activeColor, transparent: true, opacity: config.activeOpacity, side: THREE.DoubleSide });
     const previewSlabMat = new THREE.MeshBasicMaterial({ color: 0xffb800, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
@@ -807,6 +836,29 @@ export function createVRMinimap3D(
             handZoom = 0;
         },
 
+        pick: (raycaster: THREE.Raycaster) => {
+            const floor = floors[currentHighlightIdx];
+            if (!floor || !isShown(root)) return null;
+            floor.group.updateWorldMatrix(true, true);
+            pickHits.length = 0;
+            // the slabs of the whole floor, even hidden in the room display modes (raycasting ignores visibility)
+            floor.slabsMesh.raycast(raycaster, pickHits);
+            pickHits.sort((a, b) => a.distance - b.distance);
+            const hit = pickHits.find(h => (h.face?.normal.y ?? 0) > 0.5); // a slab's top, not its side
+            if (!hit) return null;
+            const model = floor.slabsMesh.worldToLocal(hit.point.clone());
+            model.y -= config.slabHeight;
+            return { world: hit.point.clone(), model };
+        },
+
+        setAimMarker: (worldPoint: THREE.Vector3 | null) => {
+            aimMarker.visible = !!worldPoint;
+            if (!worldPoint) return;
+            root.updateWorldMatrix(true, false);
+            aimMarker.position.copy(root.worldToLocal(worldPoint.clone()));
+            aimMarker.position.y += 0.001; // just over the slab
+        },
+
         setGridVisible: (visible: boolean) => {
             if (config.showGrid === visible) return;
             config.showGrid = visible;
@@ -828,6 +880,9 @@ export function createVRMinimap3D(
             clearRoomHighlight();
             for (const item of dynamicDisposables) item.dispose();
             for (const mat of sharedMaterials) mat.dispose();
+            aimRing.geometry.dispose();
+            aimDot.geometry.dispose();
+            aimRingMat.dispose();
             if (root.parent) root.parent.remove(root);
         },
     };

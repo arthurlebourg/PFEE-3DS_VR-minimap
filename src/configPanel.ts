@@ -554,7 +554,10 @@ export interface VRConfigPanel {
 }
 
 // Canvas pixels per logical pixel: drawing stays in canvasSize units, small texts stay readable in the headset
-const VR_PANEL_PIXEL_RATIO = 2;
+const VR_PANEL_PIXEL_RATIO = 3;
+
+/** Side of the square VR edit panel, in metres: big enough to read without bringing it to the face */
+export const VR_PANEL_SIZE = 0.28;
 
 function prepareCanvas(canvas: HTMLCanvasElement, canvasSize: number): CanvasRenderingContext2D {
     const ctx = canvas.getContext('2d')!;
@@ -563,20 +566,19 @@ function prepareCanvas(canvas: HTMLCanvasElement, canvasSize: number): CanvasRen
     return ctx;
 }
 
-export function createVRConfigPanel(grip: THREE.Object3D, canvasSize = 256): VRConfigPanel {
+/** @param parent the panel is added at its origin, the caller places it */
+export function createVRConfigPanel(parent: THREE.Object3D, canvasSize = 256): VRConfigPanel {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = canvasSize * VR_PANEL_PIXEL_RATIO;
 
     const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
     const mesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.15, 0.15),
+        new THREE.PlaneGeometry(VR_PANEL_SIZE, VR_PANEL_SIZE),
         new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false })
     );
-
-    mesh.position.set(0, 0.05, -0.02);
-    mesh.rotation.set(-Math.PI / 2.5, 0, 0);
     mesh.renderOrder = HUD_RENDER_ORDER;
-    grip.add(mesh);
+    parent.add(mesh);
 
     return { mesh, texture, canvas };
 }
@@ -714,14 +716,13 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
 
     // More rows above / below
     ctx.fillStyle = '#888';
-    ctx.font = '9px monospace';
+    ctx.font = '10px monospace';
     ctx.textAlign = 'center';
     if (scroll > 0) ctx.fillText('▲', canvasSize / 2, listTop + 7);
     if (scroll < contentH - viewH) ctx.fillText('▼', canvasSize / 2, listBottom - 1);
 
-    ctx.fillText('stick ↕ choisir · ↔ onglet · clic valider', canvasSize / 2, canvasSize - 48);
-    ctx.fillText('gâchette + ↔ régler · B calcul', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('A : quitter l\'édition', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('↕ choisir · ↔ onglet · clic valider', canvasSize / 2, canvasSize - 44);
+    ctx.fillText('gâchette+↔ régler · B calcul · A fermer', canvasSize / 2, canvasSize - 30);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = state.isRebuilding ? '#ffc83c' : state.isDirty || map.levelCount === 0 ? '#ff8844' : '#55ff88';
@@ -840,11 +841,10 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
     ctx.font = '11px monospace';
     ctx.fillText(`Δ x=${x.toFixed(2)} y=${y.toFixed(2)} z=${z.toFixed(2)}`, canvasSize / 2, infoY + 18);
 
-    ctx.font = '9px monospace';
+    ctx.font = '10px monospace';
     ctx.fillStyle = '#888';
-    ctx.fillText('stick ↕ étage · ↔ onglet · clic axe', canvasSize / 2, canvasSize - 48);
-    ctx.fillText('gâchette + stick déplace · B confirme', canvasSize / 2, canvasSize - 38);
-    ctx.fillText('A : quitter l\'édition', canvasSize / 2, canvasSize - 28);
+    ctx.fillText('↕ étage · ↔ onglet · clic axe', canvasSize / 2, canvasSize - 44);
+    ctx.fillText('gâchette+stick déplacer · B confirmer', canvasSize / 2, canvasSize - 30);
 
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = hasPendingPreview(state.floors) ? '#ff8844' : '#55ff88';

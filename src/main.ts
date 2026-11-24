@@ -13,11 +13,12 @@ import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
 import { createEditMode, createEditModeInputHandler, getRebuildAction, setCategoryOpen } from './editMode.js';
-import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, type VRConfigPanel } from './configPanel.js';
+import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, VR_PANEL_SIZE, type VRConfigPanel } from './configPanel.js';
 import { commitFloorMove, hasPendingPreview, type MapContext } from './floorAdjust.js';
 import { createFeedback } from './feedback.js';
+import { createMinimapPointer } from './minimapPointer.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
-import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, type HistogramHud } from './histogramPanel.js';
+import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, VR_HISTOGRAM_PIXEL_RATIO, type HistogramHud } from './histogramPanel.js';
 import { createLoadingBar } from './loadingBar.js';
 import { createStartScreen, type StartSelection } from './startScreen.js';
 
@@ -367,20 +368,16 @@ function createControllerVisual(): THREE.Group {
     body.position.set(0, 0, -0.05);
     group.add(body);
 
-    const ray = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.002, 0.002, 0.5),
-        new THREE.MeshBasicMaterial({ color: 0x88aaff })
-    );
-    ray.rotation.x = Math.PI / 2;
-    ray.position.set(0, 0, -0.3);
-    group.add(ray);
-
     return group;
 }
+
+// Target ray spaces (where the controllers point), for the minimap pointer's ray
+const pointingControllers: THREE.XRTargetRaySpace[] = [];
 
 for (let i = 0; i < 2; i++) {
     const controller = renderer.xr.getController(i);
     player.add(controller);
+    pointingControllers.push(controller);
 
     const grip = renderer.xr.getControllerGrip(i);
     grip.add(createControllerVisual());
@@ -390,6 +387,9 @@ for (let i = 0; i < 2; i++) {
         if (handedness === 'left' || handedness === 'right') grip.add(handAnchors[handedness]);
     });
 }
+
+// Right controller pointing at the minimap: browse its floors, go to the pointed spot
+const minimapPointer = createMinimapPointer(pointingControllers, player, camera, feedback.notify);
 
 // XR movement
 initXrMove(renderer.xr);
@@ -478,26 +478,56 @@ renderer.xr.addEventListener('sessionend', () => {
     }
 });
 
-// Edit mode panel (right hand) — A button toggles, B button rebuilds
+// Edit mode panels (config / floors, and the histogram on their left): placed in front of the user when the edit mode
+// opens, then they stay there. In the player's space, so they come along when moving with the stick or turning
+const editPanelAnchor = new THREE.Group();
+editPanelAnchor.name = 'edit-panel-anchor';
+player.add(editPanelAnchor);
+const EDIT_PANEL_DISTANCE = 0.55; // m in front of the head
+const EDIT_PANEL_BELOW_EYES = 0.2; // m
+const EDIT_PANEL_TILT = THREE.MathUtils.degToRad(-15); // facing up towards the eyes
+const EDIT_PANEL_GAP = 0.02; // m between the config panel and the histogram
+// Panels are redrawn at most this often: a canvas upload per frame costs the headset its framerate
+const EDIT_PANEL_REDRAW_MS = 66;
+const HISTOGRAM_REDRAW_MS = 250;
+let editPanelPlaced = false;
+let lastEditPanelDraw = -Infinity;
+let lastHistogramDraw = -Infinity;
+const headForward = new THREE.Vector3();
+
+/** Put the edit panels in front of the head, at a comfortable reading height, facing it */
+function placeEditPanels(): void {
+    // camera.position / quaternion: headset pose in the player's space
+    headForward.set(0, 0, -1).applyQuaternion(camera.quaternion).setY(0);
+    if (headForward.lengthSq() < 1e-6) headForward.set(0, 0, -1);
+    headForward.normalize();
+    editPanelAnchor.position.copy(camera.position).addScaledVector(headForward, EDIT_PANEL_DISTANCE);
+    editPanelAnchor.position.y -= EDIT_PANEL_BELOW_EYES;
+    editPanelAnchor.rotation.set(EDIT_PANEL_TILT, Math.atan2(-headForward.x, -headForward.z), 0, 'YXZ');
+    editPanelPlaced = true;
+}
+
 let vrConfigPanel: VRConfigPanel | null = null;
 
 renderer.xr.addEventListener('sessionstart', () => {
-    vrConfigPanel = createVRConfigPanel(handAnchors.right, 256);
+    vrConfigPanel = createVRConfigPanel(editPanelAnchor, 256);
+    editPanelPlaced = false;
 });
 
 renderer.xr.addEventListener('sessionend', () => {
     if (vrConfigPanel) {
-        handAnchors.right.remove(vrConfigPanel.mesh);
+        editPanelAnchor.remove(vrConfigPanel.mesh);
         vrConfigPanel.texture.dispose();
         vrConfigPanel = null;
     }
 });
 
-// Histogram HUD in the right hand (just to the left of the edit mode config panel)
 let histogramHud: HistogramHud | null = null;
 
 renderer.xr.addEventListener('sessionstart', () => {
-    histogramHud = createHistogramHud(handAnchors.right);
+    histogramHud = createHistogramHud(editPanelAnchor, VR_PANEL_SIZE);
+    const width = (histogramHud.mesh.geometry as THREE.PlaneGeometry).parameters.width;
+    histogramHud.mesh.position.x = -(VR_PANEL_SIZE / 2 + EDIT_PANEL_GAP + width / 2);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
@@ -532,7 +562,7 @@ let snapTurnArmed = true;
 
 function updateSnapTurn(): void {
     const session = renderer.xr.getSession();
-    if (!session || editMode.active || floorState.triggerHeld) {
+    if (!session || editMode.active || floorState.triggerHeld || minimapPointer.isActive) {
         snapTurnArmed = true;
         return;
     }
@@ -631,8 +661,12 @@ renderer.setAnimationLoop(() => {
 
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
+    minimapPointer.update(vrMinimap3D, sceneMap, floorState,
+        renderer.xr.isPresenting && !editMode.active && hudMinimapVisible && !spawnPending);
+
     if (!editMode.active && sceneMap && sceneMap.levels.length > 0) {
-        updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera, feedback.notify);
+        // while pointing at the minimap, the right trigger and stick are the pointer's
+        if (!minimapPointer.isActive) updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera, feedback.notify);
         // the floor shown is the one under the feet, whichever way the player got there (stairs, Y / X)
         if (renderer.xr.isPresenting && !spawnPending) {
             const floorBefore = floorState.curFloorIdx;
@@ -645,30 +679,36 @@ renderer.setAnimationLoop(() => {
     if (vrMinimap3D && sceneMap) {
         camera.getWorldDirection(playerDir);
         camera.getWorldPosition(headPos); // headset, not the player origin: they differ by the user's position in the play area
-        const targetFloor = (editMode.active && editMode.panel === 'floors')
-            ? editMode.floors.selectedFloorIdx
-            : getActiveFloorIdx(floorState);
-        vrMinimap3D.setFloorHighlight(targetFloor, floorState.triggerHeld);
+        const pointedFloor = minimapPointer.shownFloorIdx;
+        if (editMode.active && editMode.panel === 'floors') {
+            vrMinimap3D.setFloorHighlight(editMode.floors.selectedFloorIdx, false);
+        } else if (pointedFloor !== null) {
+            vrMinimap3D.setFloorHighlight(pointedFloor, pointedFloor !== floorState.curFloorIdx);
+        } else {
+            vrMinimap3D.setFloorHighlight(getActiveFloorIdx(floorState), floorState.triggerHeld);
+        }
         vrMinimap3D.update(headPos, playerDir);
     }
 
     ensureFloorMoveVisual();
 
-    if (vrConfigPanel) {
-        vrConfigPanel.mesh.visible = editMode.active;
-        if (editMode.active) {
-            renderConfigPanel(editMode, getMapContext(), vrConfigPanel.canvas, 256);
-            vrConfigPanel.texture.needsUpdate = true;
-        }
+    // Edit panels: placed in front of the user each time the edit mode opens (once the headset pose is known)
+    if (!editMode.active) editPanelPlaced = false;
+    else if (!editPanelPlaced && renderer.xr.isPresenting && !spawnPending) placeEditPanels();
+    editPanelAnchor.visible = editMode.active && editPanelPlaced;
+
+    const now = performance.now();
+    if (vrConfigPanel && editPanelAnchor.visible && now - lastEditPanelDraw > EDIT_PANEL_REDRAW_MS) {
+        renderConfigPanel(editMode, getMapContext(), vrConfigPanel.canvas, 256);
+        vrConfigPanel.texture.needsUpdate = true;
+        lastEditPanelDraw = now;
     }
 
     const levels = sceneMap?.levels ?? [];
-    if (histogramHud) {
-        histogramHud.mesh.visible = editMode.active;
-        if (editMode.active) {
-            renderHistogram(histogram, levels, histogramHud.canvas);
-            histogramHud.texture.needsUpdate = true;
-        }
+    if (histogramHud && editPanelAnchor.visible && now - lastHistogramDraw > HISTOGRAM_REDRAW_MS) {
+        renderHistogram(histogram, levels, histogramHud.canvas, undefined, undefined, VR_HISTOGRAM_PIXEL_RATIO);
+        histogramHud.texture.needsUpdate = true;
+        lastHistogramDraw = now;
     }
 
     desktopHistogramPanel.setVisible(editMode.active);
