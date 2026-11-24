@@ -1,18 +1,18 @@
 import * as THREE from 'three';
 import type { ControllerRay } from './controllerRay.js';
 import type { Notify } from './feedback.js';
-import { getControlHints, type ControlContext, type ControllerButton, type ControlHints } from './controlHints.js';
+import { drawControlsHelp, HELP_H, HELP_W } from './controlsHelp.js';
 import {
-    createCanvasPanel, panelPointAt, placeInFrontOfHead, regionAt, roundRect, wrapText, type Region,
+    createCanvasPanel, panelPointAt, placeInFrontOfHead, regionAt, roundRect, type Region,
 } from './vrCanvasPanel.js';
 
 /**
- * VR menu, right B outside the edit mode: controls help, edit mode, tutorial, change map. In front of the user,
- * driven by the right controller's ray (trigger clicks) or its stick (↕ choose, click). B again closes it
+ * VR menu, left Menu button (right B outside the edit mode too): controls help, tutorial, change map. In front of
+ * the user, driven by the right controller's ray (trigger clicks) or its stick (↕ choose, click). Pressing the same
+ * button again closes it
  */
 
 export interface VRMenuActions {
-    openEditMode: () => void;
     restartTutorial: () => void;
     /** Leave VR and go back to the model / map choice */
     changeMap: () => void;
@@ -30,13 +30,12 @@ export interface VRMenu {
     dispose: () => void;
 }
 
-type MenuItem = 'help' | 'edit' | 'tutorial' | 'changeMap' | 'close';
+type MenuItem = 'help' | 'tutorial' | 'changeMap' | 'close';
 type MenuTarget = { kind: 'item'; item: MenuItem } | { kind: 'back' };
 
-const MENU_ITEMS: MenuItem[] = ['help', 'edit', 'tutorial', 'changeMap', 'close'];
+const MENU_ITEMS: MenuItem[] = ['help', 'tutorial', 'changeMap', 'close'];
 const MENU_LABELS: Record<MenuItem, string> = {
     help: 'Aide des contrôles',
-    edit: 'Mode édition',
     tutorial: 'Revoir le tutoriel',
     changeMap: 'Changer de carte',
     close: 'Fermer',
@@ -46,29 +45,15 @@ const CONFIRM_MS = 3000;
 
 const PLACEMENT = { distance: 0.6, below: 0.15, tilt: THREE.MathUtils.degToRad(-10) };
 
-const MENU_W = 256, MENU_H = 256;
+const MENU_W = 256, MENU_H = 220;
 const ITEM_TOP = 44, ITEM_H = 36, ITEM_GAP = 4;
-const HELP_W = 640, HELP_H = 400;
+// The help is wider than the menu: a bit further away, so it fits in the view
+const HELP_SIZE_M = 0.8;
+const HELP_EXTRA_DISTANCE = 0.15;
 
 const TRIGGER_THRESHOLD = 0.5;
 const SELECT_THRESHOLD = 0.6;
 const SELECT_REARM = 0.3;
-
-// Badge of each button in the help, and their order
-const BUTTON_NAMES: Record<ControllerButton, string> = {
-    thumbstick: 'Stick', trigger: 'Gâchette', squeeze: 'Grip', a: 'A', b: 'B', x: 'X', y: 'Y',
-};
-const BUTTON_COLORS: Record<ControllerButton, string> = {
-    thumbstick: '#3b6ea5', trigger: '#7a5aa8', squeeze: '#4f8a5b', a: '#a5653b', b: '#a5653b', x: '#a5653b', y: '#a5653b',
-};
-const HELP_ORDER: Record<'left' | 'right', ControllerButton[]> = {
-    left: ['thumbstick', 'trigger', 'squeeze', 'x', 'y'],
-    right: ['thumbstick', 'trigger', 'squeeze', 'a', 'b'],
-};
-
-const NORMAL_CONTEXT: ControlContext = { editActive: false, panel: 'config', rebuildAction: 'build', hasMap: true };
-const EDIT_CONTEXT: ControlContext = { editActive: true, panel: 'config', rebuildAction: 'build', hasMap: true };
-const EDIT_FLOORS_CONTEXT: ControlContext = { editActive: true, panel: 'floors', rebuildAction: 'build', hasMap: true };
 
 /**
  * @param parent the player: the menu comes along when moving
@@ -86,8 +71,9 @@ export function createVRMenu(
     anchor.visible = false;
     parent.add(anchor);
 
-    const menuPanel = createCanvasPanel(0.3, 0.3, MENU_W, MENU_H, 3);
-    const helpPanel = createCanvasPanel(0.6, 0.375, HELP_W, HELP_H, 2);
+    const menuPanel = createCanvasPanel(0.3, 0.3 * MENU_H / MENU_W, MENU_W, MENU_H, 3);
+    const helpPanel = createCanvasPanel(HELP_SIZE_M, HELP_SIZE_M * HELP_H / HELP_W, HELP_W, HELP_H, 2);
+    helpPanel.mesh.position.z = -HELP_EXTRA_DISTANCE;
     anchor.add(menuPanel.mesh, helpPanel.mesh);
 
     let isOpen = false;
@@ -125,10 +111,6 @@ export function createVRMenu(
             case 'help':
                 setView('help');
                 notify('right', 'tick');
-                break;
-            case 'edit':
-                close();
-                actions.openEditMode();
                 break;
             case 'tutorial':
                 close();
@@ -185,84 +167,25 @@ export function createVRMenu(
 
         ctx.fillStyle = '#888';
         ctx.font = '10px sans-serif';
-        ctx.fillText('viser + gâchette · stick ↕ + clic · B : fermer', MENU_W / 2, MENU_H - 10);
+        ctx.fillText('viser + gâchette · stick ↕ + clic · Menu : fermer', MENU_W / 2, MENU_H - 10);
         menuPanel.commit();
-    }
-
-    /** One hand's controls: a badge per button, then what it does (wrapped) */
-    function drawHand(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, title: string, hints: ControlHints, order: ControllerButton[], lineH = 15): number {
-        ctx.textAlign = 'left';
-        ctx.fillStyle = '#ffee44';
-        ctx.font = 'bold 14px sans-serif';
-        ctx.fillText(title, x, y);
-        y += 10;
-        const badgeW = 58, textX = x + badgeW + 8;
-        for (const button of order) {
-            const text = hints[button];
-            if (!text) continue;
-            ctx.font = '12px sans-serif';
-            const lines = wrapText(ctx, text, w - badgeW - 8);
-            const blockH = Math.max(20, lines.length * lineH + 5);
-
-            ctx.fillStyle = BUTTON_COLORS[button];
-            roundRect(ctx, x, y + 3, badgeW, 18, 9);
-            ctx.fill();
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 11px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.fillText(BUTTON_NAMES[button], x + badgeW / 2, y + 16);
-
-            ctx.textAlign = 'left';
-            ctx.fillStyle = '#e6e6e6';
-            ctx.font = '12px sans-serif';
-            lines.forEach((line, i) => ctx.fillText(line, textX, y + 16 + i * lineH));
-            y += blockH + 4;
-        }
-        return y;
     }
 
     function drawHelp(): void {
         const ctx = helpPanel.begin();
         helpRegions = [];
-        ctx.fillStyle = 'rgba(10,12,18,0.95)';
-        roundRect(ctx, 0, 0, HELP_W, HELP_H, 12);
-        ctx.fill();
-
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 20px sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText('Contrôles', 20, 32);
-
-        const colW = (HELP_W - 60) / 2;
-        const leftEnd = drawHand(ctx, 20, 62, colW, 'Main gauche · minimap et déplacement', getControlHints('left', NORMAL_CONTEXT), HELP_ORDER.left);
-        const rightEnd = drawHand(ctx, 40 + colW, 62, colW, 'Main droite · vue, étages, menu', getControlHints('right', NORMAL_CONTEXT), HELP_ORDER.right);
-
-        // Edit mode: what changes on the right hand
-        let y = Math.max(leftEnd, rightEnd) + 8;
-        ctx.strokeStyle = '#333';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(20, y - 6);
-        ctx.lineTo(HELP_W - 20, y - 6);
-        ctx.stroke();
-        const edit = getControlHints('right', EDIT_CONTEXT);
-        const editFloors = getControlHints('right', EDIT_FLOORS_CONTEXT);
-        y = drawHand(ctx, 20, y + 12, HELP_W - 40, 'En mode édition (A) · main droite', {
-            thumbstick: `Config : ${edit.thumbstick} — Étages : ${editFloors.thumbstick}`,
-            trigger: edit.trigger,
-            b: `Config : ${edit.b} — Étages : ${editFloors.b}`,
-        }, ['thumbstick', 'trigger', 'b'], 14);
+        drawControlsHelp(ctx);
 
         // Back to the menu
-        const backW = 150, backH = 28, backX = HELP_W - backW - 20, backY = 14;
+        const backW = 170, backH = 30, backX = HELP_W - backW - 20, backY = 14;
         helpRegions.push({ x: backX, y: backY, w: backW, h: backH, target: { kind: 'back' } });
         ctx.fillStyle = '#2668a6';
         roundRect(ctx, backX, backY, backW, backH, 6);
         ctx.fill();
         ctx.fillStyle = '#fff';
-        ctx.font = 'bold 13px sans-serif';
+        ctx.font = 'bold 14px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('← Retour (clic stick)', backX + backW / 2, backY + 19);
+        ctx.fillText('← Retour (clic stick)', backX + backW / 2, backY + 20);
         helpPanel.commit();
     }
 

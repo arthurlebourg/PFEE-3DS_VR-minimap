@@ -395,6 +395,8 @@ for (let i = 0; i < 2; i++) {
     player.add(grip);
     grip.addEventListener('connected', (event) => {
         const handedness = event.data?.handedness;
+        // which buttons the browser exposes (the Menu button's index, if any): chrome://inspect on the Quest
+        console.log(`Controller ${handedness}: profiles [${event.data?.profiles?.join(', ')}], ${event.data?.gamepad?.buttons.length ?? 0} buttons`);
         if (handedness === 'left' || handedness === 'right') grip.add(handAnchors[handedness]);
     });
 }
@@ -436,18 +438,14 @@ const tutorial = createTutorial(player, camera, [
     },
     {
         title: 'Menu et réglages',
-        text: 'B : menu, aide des contrôles et changement de carte. A : mode édition, pour régler la carte.',
+        text: 'Touche Menu ☰ (manette gauche) : aide des contrôles et changement de carte. A : mode édition, pour régler la carte.',
         onStart: () => { tutorialProgress.menuOrEdit = false; },
         isDone: () => tutorialProgress.menuOrEdit,
     },
 ], feedback.notify);
 
-// Menu, right B outside the edit mode
+// Menu: left Menu button (right B outside the edit mode too)
 const vrMenu = createVRMenu(player, camera, controllerRay, feedback.notify, {
-    openEditMode: () => {
-        editMode.active = true;
-        feedback.notify('right', 'tick', 'Mode édition');
-    },
     restartTutorial: () => tutorial.restart(),
     changeMap: () => { void changeMap(); },
 });
@@ -797,6 +795,29 @@ let lastVRMinimapBtnState = false;
 let lastVRDisplayModeBtnState = false;
 let lastVRDebugGridBtnState = false;
 let lastVRMenuBtnState = false;
+let lastVRBMenuBtnState = false;
+
+/**
+ * The left controller's Menu button isn't part of the 'xr-standard' gamepad mapping: a browser that exposes it puts
+ * it in the free touchpad slot (2) or after the thumbrest (6). The Quest browser may keep it for its own menu
+ */
+function isMenuButtonPressed(gp: Gamepad): boolean {
+    return gp.buttons.some((button, i) => (i === 2 || i > 6) && button.pressed);
+}
+
+function toggleVRMenu(): void {
+    if (vrMenu.isOpen) {
+        vrMenu.close();
+        feedback.notify('right', 'tick', 'Menu fermé');
+    } else {
+        // the edit panels and the menu would overlap
+        if (editMode.active) {
+            editMode.active = false;
+            desktopConfigPanel.sync();
+        }
+        vrMenu.open();
+    }
+}
 function updateVRMinimapToggleInput(): void {
     const session = renderer.xr.getSession();
     if (!session) return;
@@ -804,6 +825,10 @@ function updateVRMinimapToggleInput(): void {
         const gp = source.gamepad;
         if (!gp) continue;
         if (source.handedness === 'left') {
+            const menuPressed = isMenuButtonPressed(gp);
+            if (menuPressed && !lastVRMenuBtnState) toggleVRMenu();
+            lastVRMenuBtnState = menuPressed;
+
             const stickClicked = gp.buttons[3]?.pressed ?? false;
             if (stickClicked && !lastVRMinimapBtnState) toggleMinimap3D();
             lastVRMinimapBtnState = stickClicked;
@@ -812,16 +837,10 @@ function updateVRMinimapToggleInput(): void {
             if (triggerPressed && !lastVRDisplayModeBtnState) cycleMinimapDisplayMode();
             lastVRDisplayModeBtnState = triggerPressed;
         } else if (source.handedness === 'right') {
-            // B opens / closes the menu (in edit mode B is the panel's)
+            // B too, where the browser keeps the Menu button for itself (in edit mode B is the panel's)
             const bPressed = gp.buttons[5]?.pressed ?? false;
-            if (bPressed && !lastVRMenuBtnState && !editMode.active) {
-                if (!vrMenu.isOpen) vrMenu.open();
-                else {
-                    vrMenu.close();
-                    feedback.notify('right', 'tick', 'Menu fermé');
-                }
-            }
-            lastVRMenuBtnState = bPressed;
+            if (bPressed && !lastVRBMenuBtnState && !editMode.active) toggleVRMenu();
+            lastVRBMenuBtnState = bPressed;
 
             const gripPressed = gp.buttons[1]?.pressed ?? false;
             if (gripPressed && !lastVRDebugGridBtnState) {
