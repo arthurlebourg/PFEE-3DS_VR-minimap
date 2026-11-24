@@ -7,9 +7,8 @@ import {
 } from './vrCanvasPanel.js';
 
 /**
- * VR menu, left Menu button (right B outside the edit mode too): controls help, tutorial, change map. In front of
- * the user, driven by the right controller's ray (trigger clicks) or its stick (↕ choose, click). Pressing the same
- * button again closes it
+ * VR menu, right B outside the edit mode: controls help, tutorial, change map. In front of the user, driven by the
+ * right controller's ray (trigger clicks) or its stick (↕ choose, click). B again closes it
  */
 
 export interface VRMenuActions {
@@ -167,7 +166,7 @@ export function createVRMenu(
 
         ctx.fillStyle = '#888';
         ctx.font = '10px sans-serif';
-        ctx.fillText('viser + gâchette · stick ↕ + clic · Menu : fermer', MENU_W / 2, MENU_H - 10);
+        ctx.fillText('viser + gâchette · stick ↕ + clic · B : fermer', MENU_W / 2, MENU_H - 10);
         menuPanel.commit();
     }
 

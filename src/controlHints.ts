@@ -2,8 +2,8 @@ import type { EditPanel, RebuildAction } from './editMode.js';
 
 export type Hand = 'left' | 'right';
 
-/** Buttons of a Touch controller: A / B on the right one, X / Y and Menu on the left one */
-export type ControllerButton = 'trigger' | 'squeeze' | 'thumbstick' | 'a' | 'b' | 'x' | 'y' | 'menu';
+/** Buttons of a Touch controller: A / B on the right one, X / Y on the left one */
+export type ControllerButton = 'trigger' | 'squeeze' | 'thumbstick' | 'a' | 'b' | 'x' | 'y';
 
 /** What each button does right now, no entry = the button does nothing */
 export type ControlHints = Partial<Record<ControllerButton, string>>;
@@ -32,7 +32,6 @@ function leftHints(): ControlHints {
         squeeze: 'Maintenir : zoom minimap',
         x: 'Descendre',
         y: 'Monter',
-        menu: 'Ouvrir le menu : aide des contrôles, tutoriel, changer de carte',
     };
 }
 
@@ -44,7 +43,7 @@ function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext
             trigger: 'Viser la minimap : y aller · maintenir + stick ↕ : étage',
             squeeze: 'Grille de debug',
             a: 'Mode édition',
-            b: 'Menu aussi (si la touche Menu ne répond pas)',
+            b: 'Menu : aide des contrôles, tutoriel, changer de carte',
         };
     }
     if (panel === 'config') {

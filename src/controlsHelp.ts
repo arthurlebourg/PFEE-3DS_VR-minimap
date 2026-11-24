@@ -9,16 +9,15 @@ import { roundRect, wrapText } from './vrCanvasPanel.js';
 export const HELP_W = 960;
 export const HELP_H = 540;
 
-/** Buttons shown in the help: the controls' ones, plus the right controller's system (Meta) button */
-type HelpButton = ControllerButton | 'system';
+type HelpButton = ControllerButton;
 
 const BUTTON_NAMES: Record<Hand, Partial<Record<HelpButton, string>>> = {
-    left: { thumbstick: 'Stick gauche', trigger: 'Gâchette gauche', squeeze: 'Grip gauche', x: 'X', y: 'Y', menu: 'Menu ☰' },
-    right: { thumbstick: 'Stick droit', trigger: 'Gâchette droite', squeeze: 'Grip droit', a: 'A', b: 'B', system: 'Bouton Meta' },
+    left: { thumbstick: 'Stick gauche', trigger: 'Gâchette gauche', squeeze: 'Grip gauche', x: 'X', y: 'Y' },
+    right: { thumbstick: 'Stick droit', trigger: 'Gâchette droite', squeeze: 'Grip droit', a: 'A', b: 'B' },
 };
 const BUTTON_COLORS: Record<HelpButton, string> = {
     thumbstick: '#6fb3ff', trigger: '#c49bff', squeeze: '#7fd68f',
-    a: '#ffb27a', b: '#ffb27a', x: '#ffb27a', y: '#ffb27a', menu: '#ffe07a', system: '#999',
+    a: '#ffb27a', b: '#ffb27a', x: '#ffb27a', y: '#ffb27a',
 };
 
 const NORMAL_CONTEXT: ControlContext = { editActive: false, panel: 'config', rebuildAction: 'build', hasMap: true };
@@ -28,11 +27,12 @@ const EDIT_FLOORS_CONTEXT: ControlContext = { editActive: true, panel: 'floors',
 // Drawing of the left controller, front three-quarter view, in its own units (the right one is its mirror)
 const CTRL_W = 150;
 const CTRL_SCALE = 1.1;
-// Buttons' centres on the drawing. The right controller has A / B / Meta where the left one has X / Y / Menu
+// Buttons' centres on the drawing. The right controller has A / B where the left one has X / Y (the small oval
+// Menu / Meta buttons are drawn but not explained: the browser and the headset keep them)
 const LEFT_ANCHORS: Partial<Record<HelpButton, [number, number]>> = {
-    thumbstick: [50, 86], y: [82, 106], menu: [28, 113], x: [60, 118], trigger: [108, 146], squeeze: [58, 170],
+    thumbstick: [50, 86], y: [82, 106], x: [60, 118], trigger: [108, 146], squeeze: [58, 170],
 };
-const MIRRORED: Partial<Record<HelpButton, HelpButton>> = { x: 'a', y: 'b', menu: 'system' };
+const MIRRORED: Partial<Record<HelpButton, HelpButton>> = { x: 'a', y: 'b' };
 
 // Layout
 const CTRL_TOP = 66;
@@ -269,9 +269,7 @@ export function drawControlsHelp(ctx: CanvasRenderingContext2D): void {
     for (const [hand, left] of sides) {
         drawControllerBody(ctx, left, CTRL_TOP, hand);
         const anchors = controllerAnchors(left, CTRL_TOP, hand);
-        const texts: Partial<Record<HelpButton, string>> = { ...getControlHints(hand, NORMAL_CONTEXT) };
-        if (hand === 'right') texts.system = 'Menu du casque (hors application)';
-        drawLabels(ctx, hand, anchors, texts);
+        drawLabels(ctx, hand, anchors, getControlHints(hand, NORMAL_CONTEXT));
         drawButtonLetters(ctx, anchors);
     }
 
