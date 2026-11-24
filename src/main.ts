@@ -19,6 +19,9 @@ import { createFeedback } from './feedback.js';
 import { createMinimapPointer } from './minimapPointer.js';
 import { createControllerRay } from './controllerRay.js';
 import { createPanelPointer } from './panelPointer.js';
+import { createVRMenu } from './vrMenu.js';
+import { createTutorial } from './tutorial.js';
+import { placeInFrontOfHead } from './vrCanvasPanel.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
 import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, VR_HISTOGRAM_PIXEL_RATIO, type HistogramHud } from './histogramPanel.js';
 import { createLoadingBar } from './loadingBar.js';
@@ -406,6 +409,50 @@ const panelPointer = createPanelPointer(controllerRay, editMode,
     () => { lastEditPanelDraw = -Infinity; });
 let vrPanelRegions: PanelRegion[] = [];
 
+// Back to the model / map choice: the start screen comes back on reload, with the last choice selected
+async function changeMap(): Promise<void> {
+    try {
+        await renderer.xr.getSession()?.end();
+    } catch {
+        // already ending
+    }
+    location.reload();
+}
+
+// First-launch tutorial. What each step watches, reset when the step shows
+const tutorialProgress = { moveSeconds: 0, zoomed: false, menuOrEdit: false };
+const tutorial = createTutorial(player, camera, [
+    {
+        title: 'Se déplacer',
+        text: 'Stick gauche : se déplacer. Stick droit ← → : tourner par crans.',
+        onStart: () => { tutorialProgress.moveSeconds = 0; },
+        isDone: () => tutorialProgress.moveSeconds > 1,
+    },
+    {
+        title: 'La minimap',
+        text: 'Regarde ta main gauche : c\'est la carte du bâtiment, toi en rouge. Maintiens le grip gauche pour l\'agrandir.',
+        onStart: () => { tutorialProgress.zoomed = false; },
+        isDone: () => tutorialProgress.zoomed,
+    },
+    {
+        title: 'Menu et réglages',
+        text: 'B : menu, aide des contrôles et changement de carte. A : mode édition, pour régler la carte.',
+        onStart: () => { tutorialProgress.menuOrEdit = false; },
+        isDone: () => tutorialProgress.menuOrEdit,
+    },
+], feedback.notify);
+
+// Menu, right B outside the edit mode
+const vrMenu = createVRMenu(player, camera, controllerRay, feedback.notify, {
+    openEditMode: () => {
+        editMode.active = true;
+        feedback.notify('right', 'tick', 'Mode édition');
+    },
+    restartTutorial: () => tutorial.restart(),
+    changeMap: () => { void changeMap(); },
+});
+renderer.xr.addEventListener('sessionend', () => vrMenu.close());
+
 // XR movement
 initXrMove(renderer.xr);
 
@@ -508,17 +555,9 @@ const HISTOGRAM_REDRAW_MS = 250;
 let editPanelPlaced = false;
 let lastEditPanelDraw = -Infinity;
 let lastHistogramDraw = -Infinity;
-const headForward = new THREE.Vector3();
-
 /** Put the edit panels in front of the head, at a comfortable reading height, facing it */
 function placeEditPanels(): void {
-    // camera.position / quaternion: headset pose in the player's space
-    headForward.set(0, 0, -1).applyQuaternion(camera.quaternion).setY(0);
-    if (headForward.lengthSq() < 1e-6) headForward.set(0, 0, -1);
-    headForward.normalize();
-    editPanelAnchor.position.copy(camera.position).addScaledVector(headForward, EDIT_PANEL_DISTANCE);
-    editPanelAnchor.position.y -= EDIT_PANEL_BELOW_EYES;
-    editPanelAnchor.rotation.set(EDIT_PANEL_TILT, Math.atan2(-headForward.x, -headForward.z), 0, 'YXZ');
+    placeInFrontOfHead(editPanelAnchor, camera, { distance: EDIT_PANEL_DISTANCE, below: EDIT_PANEL_BELOW_EYES, tilt: EDIT_PANEL_TILT });
     editPanelPlaced = true;
 }
 
@@ -577,7 +616,7 @@ let snapTurnArmed = true;
 
 function updateSnapTurn(): void {
     const session = renderer.xr.getSession();
-    if (!session || editMode.active || floorState.triggerHeld || minimapPointer.isActive) {
+    if (!session || editMode.active || floorState.triggerHeld || minimapPointer.isActive || vrMenu.isOpen) {
         snapTurnArmed = true;
         return;
     }
@@ -608,6 +647,7 @@ function updateMinimapZoom(deltaTime: number): void {
     }
     const target = held ? 1 : 0;
     if (held && !minimapZoomHeld) feedback.notify('left', 'tick');
+    if (held) tutorialProgress.zoomed = true;
     minimapZoomHeld = held;
     minimapZoom += (target - minimapZoom) * Math.min(1, deltaTime * MINIMAP_ZOOM_SPEED);
     if (Math.abs(target - minimapZoom) < 0.001) minimapZoom = target;
@@ -660,7 +700,10 @@ renderer.setAnimationLoop(() => {
 
     if (!floorState.isCoolingDown) {
         const joystick = getVRJoystick();
-        if (joystick.x !== 0 || joystick.y !== 0) spawnIsProvisional = false;
+        if (joystick.x !== 0 || joystick.y !== 0) {
+            spawnIsProvisional = false;
+            tutorialProgress.moveSeconds += timer.getDelta();
+        }
         updateMovement(player, camera, joystick);
     }
 
@@ -675,15 +718,19 @@ renderer.setAnimationLoop(() => {
     updateMinimapZoom(timer.getDelta());
 
     const rayReady = renderer.xr.isPresenting && controllerRay.update(player);
+    if (editMode.active && vrMenu.isOpen) vrMenu.close(); // A opened the edit mode
+    vrMenu.update(rayReady);
+    if (vrMenu.isOpen || editMode.active) tutorialProgress.menuOrEdit = true;
+    tutorial.update(renderer.xr.isPresenting && !spawnPending, vrMenu.isOpen || editMode.active);
     panelPointer.update(rayReady && editPanelAnchor.visible ? vrConfigPanel?.mesh ?? null : null, vrPanelRegions, 256);
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
     minimapPointer.update(vrMinimap3D, sceneMap, floorState,
-        rayReady && !editMode.active && hudMinimapVisible && !spawnPending);
+        rayReady && !editMode.active && !vrMenu.isOpen && hudMinimapVisible && !spawnPending);
 
     if (!editMode.active && sceneMap && sceneMap.levels.length > 0) {
         // while pointing at the minimap, the right trigger and stick are the pointer's
-        if (!minimapPointer.isActive) updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera, feedback.notify);
+        if (!minimapPointer.isActive && !vrMenu.isOpen) updateFloorManager(floorState, sceneMap, renderer.xr.getSession(), player, camera, feedback.notify);
         // the floor shown is the one under the feet, whichever way the player got there (stairs, Y / X)
         if (renderer.xr.isPresenting && !spawnPending) {
             const floorBefore = floorState.curFloorIdx;
@@ -749,6 +796,7 @@ window.addEventListener('resize', () => {
 let lastVRMinimapBtnState = false;
 let lastVRDisplayModeBtnState = false;
 let lastVRDebugGridBtnState = false;
+let lastVRMenuBtnState = false;
 function updateVRMinimapToggleInput(): void {
     const session = renderer.xr.getSession();
     if (!session) return;
@@ -764,6 +812,17 @@ function updateVRMinimapToggleInput(): void {
             if (triggerPressed && !lastVRDisplayModeBtnState) cycleMinimapDisplayMode();
             lastVRDisplayModeBtnState = triggerPressed;
         } else if (source.handedness === 'right') {
+            // B opens / closes the menu (in edit mode B is the panel's)
+            const bPressed = gp.buttons[5]?.pressed ?? false;
+            if (bPressed && !lastVRMenuBtnState && !editMode.active) {
+                if (!vrMenu.isOpen) vrMenu.open();
+                else {
+                    vrMenu.close();
+                    feedback.notify('right', 'tick', 'Menu fermé');
+                }
+            }
+            lastVRMenuBtnState = bPressed;
+
             const gripPressed = gp.buttons[1]?.pressed ?? false;
             if (gripPressed && !lastVRDebugGridBtnState) {
                 toggleDebugOverlay();

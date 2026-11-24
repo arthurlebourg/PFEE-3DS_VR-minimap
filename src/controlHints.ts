@@ -43,6 +43,7 @@ function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext
             trigger: 'Viser la minimap : y aller · maintenir + stick ↕ : étage',
             squeeze: 'Grille de debug',
             a: 'Mode édition',
+            b: 'Menu : aide, tutoriel, changer de carte',
         };
     }
     if (panel === 'config') {

@@ -1,0 +1,349 @@
+import * as THREE from 'three';
+import type { ControllerRay } from './controllerRay.js';
+import type { Notify } from './feedback.js';
+import { getControlHints, type ControlContext, type ControllerButton, type ControlHints } from './controlHints.js';
+import {
+    createCanvasPanel, panelPointAt, placeInFrontOfHead, regionAt, roundRect, wrapText, type Region,
+} from './vrCanvasPanel.js';
+
+/**
+ * VR menu, right B outside the edit mode: controls help, edit mode, tutorial, change map. In front of the user,
+ * driven by the right controller's ray (trigger clicks) or its stick (↕ choose, click). B again closes it
+ */
+
+export interface VRMenuActions {
+    openEditMode: () => void;
+    restartTutorial: () => void;
+    /** Leave VR and go back to the model / map choice */
+    changeMap: () => void;
+}
+
+export interface VRMenu {
+    readonly isOpen: boolean;
+    open: () => void;
+    close: () => void;
+    /**
+     * Once per frame in VR, after ray.update(). While open the right stick and trigger are the menu's
+     * @param rayReady the right controller's ray is usable this frame
+     */
+    update: (rayReady: boolean) => void;
+    dispose: () => void;
+}
+
+type MenuItem = 'help' | 'edit' | 'tutorial' | 'changeMap' | 'close';
+type MenuTarget = { kind: 'item'; item: MenuItem } | { kind: 'back' };
+
+const MENU_ITEMS: MenuItem[] = ['help', 'edit', 'tutorial', 'changeMap', 'close'];
+const MENU_LABELS: Record<MenuItem, string> = {
+    help: 'Aide des contrôles',
+    edit: 'Mode édition',
+    tutorial: 'Revoir le tutoriel',
+    changeMap: 'Changer de carte',
+    close: 'Fermer',
+};
+// "Change map" leaves the session: a second click within this delay confirms it
+const CONFIRM_MS = 3000;
+
+const PLACEMENT = { distance: 0.6, below: 0.15, tilt: THREE.MathUtils.degToRad(-10) };
+
+const MENU_W = 256, MENU_H = 256;
+const ITEM_TOP = 44, ITEM_H = 36, ITEM_GAP = 4;
+const HELP_W = 640, HELP_H = 400;
+
+const TRIGGER_THRESHOLD = 0.5;
+const SELECT_THRESHOLD = 0.6;
+const SELECT_REARM = 0.3;
+
+// Badge of each button in the help, and their order
+const BUTTON_NAMES: Record<ControllerButton, string> = {
+    thumbstick: 'Stick', trigger: 'Gâchette', squeeze: 'Grip', a: 'A', b: 'B', x: 'X', y: 'Y',
+};
+const BUTTON_COLORS: Record<ControllerButton, string> = {
+    thumbstick: '#3b6ea5', trigger: '#7a5aa8', squeeze: '#4f8a5b', a: '#a5653b', b: '#a5653b', x: '#a5653b', y: '#a5653b',
+};
+const HELP_ORDER: Record<'left' | 'right', ControllerButton[]> = {
+    left: ['thumbstick', 'trigger', 'squeeze', 'x', 'y'],
+    right: ['thumbstick', 'trigger', 'squeeze', 'a', 'b'],
+};
+
+const NORMAL_CONTEXT: ControlContext = { editActive: false, panel: 'config', rebuildAction: 'build', hasMap: true };
+const EDIT_CONTEXT: ControlContext = { editActive: true, panel: 'config', rebuildAction: 'build', hasMap: true };
+const EDIT_FLOORS_CONTEXT: ControlContext = { editActive: true, panel: 'floors', rebuildAction: 'build', hasMap: true };
+
+/**
+ * @param parent the player: the menu comes along when moving
+ * @param camera user camera (its pose in the player's space places the menu)
+ */
+export function createVRMenu(
+    parent: THREE.Object3D,
+    camera: THREE.Camera,
+    ray: ControllerRay,
+    notify: Notify,
+    actions: VRMenuActions,
+): VRMenu {
+    const anchor = new THREE.Group();
+    anchor.name = 'vr-menu';
+    anchor.visible = false;
+    parent.add(anchor);
+
+    const menuPanel = createCanvasPanel(0.3, 0.3, MENU_W, MENU_H, 3);
+    const helpPanel = createCanvasPanel(0.6, 0.375, HELP_W, HELP_H, 2);
+    anchor.add(menuPanel.mesh, helpPanel.mesh);
+
+    let isOpen = false;
+    let view: 'menu' | 'help' = 'menu';
+    let selected = 0;
+    let confirmUntil = 0;
+    let dirty = true;
+    let menuRegions: Region<MenuTarget>[] = [];
+    let helpRegions: Region<MenuTarget>[] = [];
+
+    let triggerWasHeld = true; // the press that opened the menu isn't a click
+    let stickClickWasHeld = true;
+    let selectArmed = false;
+
+    function setView(next: 'menu' | 'help'): void {
+        view = next;
+        menuPanel.mesh.visible = view === 'menu';
+        helpPanel.mesh.visible = view === 'help';
+        dirty = true;
+    }
+
+    function close(): void {
+        isOpen = false;
+        anchor.visible = false;
+        confirmUntil = 0;
+    }
+
+    function activate(target: MenuTarget): void {
+        if (target.kind === 'back') {
+            setView('menu');
+            notify('right', 'tick');
+            return;
+        }
+        switch (target.item) {
+            case 'help':
+                setView('help');
+                notify('right', 'tick');
+                break;
+            case 'edit':
+                close();
+                actions.openEditMode();
+                break;
+            case 'tutorial':
+                close();
+                actions.restartTutorial();
+                break;
+            case 'changeMap':
+                if (performance.now() < confirmUntil) {
+                    close();
+                    actions.changeMap();
+                } else {
+                    confirmUntil = performance.now() + CONFIRM_MS;
+                    notify('right', 'refused', 'Cliquer encore pour confirmer');
+                }
+                break;
+            case 'close':
+                close();
+                notify('right', 'tick', 'Menu fermé');
+                break;
+        }
+        dirty = true;
+    }
+
+    function drawMenu(): void {
+        const ctx = menuPanel.begin();
+        menuRegions = [];
+        ctx.fillStyle = 'rgba(10,12,18,0.94)';
+        roundRect(ctx, 0, 0, MENU_W, MENU_H, 10);
+        ctx.fill();
+
+        ctx.fillStyle = '#ffee44';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Menu', MENU_W / 2, 28);
+
+        const confirming = performance.now() < confirmUntil;
+        MENU_ITEMS.forEach((item, i) => {
+            const y = ITEM_TOP + i * (ITEM_H + ITEM_GAP);
+            const isSelected = i === selected;
+            const isConfirm = item === 'changeMap' && confirming;
+            menuRegions.push({ x: 14, y, w: MENU_W - 28, h: ITEM_H, target: { kind: 'item', item } });
+
+            ctx.fillStyle = isConfirm ? '#8a4a1c' : isSelected ? '#2668a6' : '#1d2a3a';
+            roundRect(ctx, 14, y, MENU_W - 28, ITEM_H, 6);
+            ctx.fill();
+            if (isSelected) {
+                ctx.strokeStyle = '#ffc83c';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+            ctx.fillStyle = '#fff';
+            ctx.font = `${isSelected ? 'bold ' : ''}14px sans-serif`;
+            ctx.fillText(isConfirm ? 'Confirmer : quitter la carte' : MENU_LABELS[item], MENU_W / 2, y + ITEM_H / 2 + 5);
+        });
+
+        ctx.fillStyle = '#888';
+        ctx.font = '10px sans-serif';
+        ctx.fillText('viser + gâchette · stick ↕ + clic · B : fermer', MENU_W / 2, MENU_H - 10);
+        menuPanel.commit();
+    }
+
+    /** One hand's controls: a badge per button, then what it does (wrapped) */
+    function drawHand(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, title: string, hints: ControlHints, order: ControllerButton[], lineH = 15): number {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#ffee44';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText(title, x, y);
+        y += 10;
+        const badgeW = 58, textX = x + badgeW + 8;
+        for (const button of order) {
+            const text = hints[button];
+            if (!text) continue;
+            ctx.font = '12px sans-serif';
+            const lines = wrapText(ctx, text, w - badgeW - 8);
+            const blockH = Math.max(20, lines.length * lineH + 5);
+
+            ctx.fillStyle = BUTTON_COLORS[button];
+            roundRect(ctx, x, y + 3, badgeW, 18, 9);
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(BUTTON_NAMES[button], x + badgeW / 2, y + 16);
+
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#e6e6e6';
+            ctx.font = '12px sans-serif';
+            lines.forEach((line, i) => ctx.fillText(line, textX, y + 16 + i * lineH));
+            y += blockH + 4;
+        }
+        return y;
+    }
+
+    function drawHelp(): void {
+        const ctx = helpPanel.begin();
+        helpRegions = [];
+        ctx.fillStyle = 'rgba(10,12,18,0.95)';
+        roundRect(ctx, 0, 0, HELP_W, HELP_H, 12);
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('Contrôles', 20, 32);
+
+        const colW = (HELP_W - 60) / 2;
+        const leftEnd = drawHand(ctx, 20, 62, colW, 'Main gauche · minimap et déplacement', getControlHints('left', NORMAL_CONTEXT), HELP_ORDER.left);
+        const rightEnd = drawHand(ctx, 40 + colW, 62, colW, 'Main droite · vue, étages, menu', getControlHints('right', NORMAL_CONTEXT), HELP_ORDER.right);
+
+        // Edit mode: what changes on the right hand
+        let y = Math.max(leftEnd, rightEnd) + 8;
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(20, y - 6);
+        ctx.lineTo(HELP_W - 20, y - 6);
+        ctx.stroke();
+        const edit = getControlHints('right', EDIT_CONTEXT);
+        const editFloors = getControlHints('right', EDIT_FLOORS_CONTEXT);
+        y = drawHand(ctx, 20, y + 12, HELP_W - 40, 'En mode édition (A) · main droite', {
+            thumbstick: `Config : ${edit.thumbstick} — Étages : ${editFloors.thumbstick}`,
+            trigger: edit.trigger,
+            b: `Config : ${edit.b} — Étages : ${editFloors.b}`,
+        }, ['thumbstick', 'trigger', 'b'], 14);
+
+        // Back to the menu
+        const backW = 150, backH = 28, backX = HELP_W - backW - 20, backY = 14;
+        helpRegions.push({ x: backX, y: backY, w: backW, h: backH, target: { kind: 'back' } });
+        ctx.fillStyle = '#2668a6';
+        roundRect(ctx, backX, backY, backW, backH, 6);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('← Retour (clic stick)', backX + backW / 2, backY + 19);
+        helpPanel.commit();
+    }
+
+    setView('menu');
+
+    return {
+        get isOpen() { return isOpen; },
+
+        open() {
+            isOpen = true;
+            selected = 0;
+            confirmUntil = 0;
+            triggerWasHeld = true;
+            stickClickWasHeld = true;
+            selectArmed = false;
+            setView('menu');
+            placeInFrontOfHead(anchor, camera, PLACEMENT);
+            anchor.visible = true;
+            notify('right', 'tick');
+        },
+
+        close,
+
+        update(rayReady) {
+            if (!isOpen) return;
+            const gamepad = ray.gamepad;
+            const triggerHeld = (gamepad?.buttons[0]?.value ?? 0) > TRIGGER_THRESHOLD;
+            const triggerPressed = triggerHeld && !triggerWasHeld;
+            triggerWasHeld = triggerHeld;
+            const stickClickHeld = gamepad?.buttons[3]?.pressed ?? false;
+            const stickClicked = stickClickHeld && !stickClickWasHeld;
+            stickClickWasHeld = stickClickHeld;
+
+            // A confirmation running out redraws the button
+            if (confirmUntil && performance.now() >= confirmUntil) {
+                confirmUntil = 0;
+                dirty = true;
+            }
+
+            // Stick: ↕ choose (menu), click activates (menu) / goes back (help)
+            const stickY = gamepad?.axes[3] ?? 0;
+            if (view === 'menu') {
+                if (selectArmed && Math.abs(stickY) > SELECT_THRESHOLD) {
+                    selected = (selected + (stickY > 0 ? 1 : -1) + MENU_ITEMS.length) % MENU_ITEMS.length;
+                    selectArmed = false;
+                    dirty = true;
+                    notify('right', 'tick');
+                } else if (Math.abs(stickY) < SELECT_REARM) {
+                    selectArmed = true;
+                }
+            }
+            if (stickClicked) activate(view === 'menu' ? { kind: 'item', item: MENU_ITEMS[selected] } : { kind: 'back' });
+
+            // Ray: hover selects, trigger clicks
+            const panel = view === 'menu' ? menuPanel : helpPanel;
+            const point = rayReady && isOpen ? panelPointAt(panel, ray.raycaster) : null;
+            if (rayReady && isOpen) ray.show(point ? point.distance : null);
+            if (point) {
+                const region = regionAt(view === 'menu' ? menuRegions : helpRegions, point.x, point.y);
+                if (region?.target.kind === 'item') {
+                    const index = MENU_ITEMS.indexOf(region.target.item);
+                    if (index !== selected) {
+                        selected = index;
+                        dirty = true;
+                    }
+                }
+                if (triggerPressed && region) activate(region.target);
+            }
+
+            if (dirty && isOpen) {
+                if (view === 'menu') drawMenu();
+                else drawHelp();
+                dirty = false;
+            }
+        },
+
+        dispose() {
+            menuPanel.dispose();
+            helpPanel.dispose();
+            anchor.removeFromParent();
+        },
+    };
+}
+
