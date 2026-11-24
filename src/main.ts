@@ -12,11 +12,13 @@ import { createVRMinimap3D, MINIMAP_DISPLAY_MODES, type MinimapDisplayMode, type
 import { initXrMove } from './xrMove.ts';
 import { createDebugFloorOverlay, type DebugFloorOverlay } from './debugMinimap.ts';
 import { buildSceneMap, type HistogramBin } from './minimapBuilder.js';
-import { createEditMode, createEditModeInputHandler, getRebuildAction, setCategoryOpen } from './editMode.js';
-import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, VR_PANEL_SIZE, type VRConfigPanel } from './configPanel.js';
+import { createEditMode, createEditModeInputHandler, createPanelActionPress, getRebuildAction, setCategoryOpen } from './editMode.js';
+import { createDesktopConfigPanel, createVRConfigPanel, renderConfigPanel, VR_PANEL_SIZE, type PanelRegion, type VRConfigPanel } from './configPanel.js';
 import { commitFloorMove, hasPendingPreview, type MapContext } from './floorAdjust.js';
 import { createFeedback } from './feedback.js';
 import { createMinimapPointer } from './minimapPointer.js';
+import { createControllerRay } from './controllerRay.js';
+import { createPanelPointer } from './panelPointer.js';
 import { createFloorMoveVisual, type FloorMoveVisual } from './floorAdjustVisuals.js';
 import { createHistogramHud, createDesktopHistogramPanel, renderHistogram, VR_HISTOGRAM_PIXEL_RATIO, type HistogramHud } from './histogramPanel.js';
 import { createLoadingBar } from './loadingBar.js';
@@ -350,7 +352,9 @@ function ensureFloorMoveVisual(): void {
 }
 
 const desktopConfigPanel = createDesktopConfigPanel(editMode, rebuildMinimap, cancelBuild, saveMinimap, confirmFloorMove, getMapContext, () => vrMinimap3D);
-const editModeInputUpdate = createEditModeInputHandler(editMode, onRebuildButton, saveMinimap, confirmFloorMove, getMapContext, feedback.notify);
+// trigger + stick of the edit mode: not while the controller's ray uses the trigger on the panel
+const editModeInputUpdate = createEditModeInputHandler(editMode, onRebuildButton, saveMinimap, confirmFloorMove, getMapContext, feedback.notify,
+    () => panelPointer.hasTrigger);
 const desktopHistogramPanel = createDesktopHistogramPanel();
 
 // Player
@@ -358,6 +362,10 @@ const player = createPlayer(camera);
 scene.add(player);
 
 // Controllers
+/**
+ * Stand-in for a controller, on its target ray space (where it points): along the aiming ray, which leaves from its
+ * front end. The grip space's axes don't follow the pointing direction (its -Z runs along the handle)
+ */
 function createControllerVisual(): THREE.Group {
     const group = new THREE.Group();
 
@@ -365,7 +373,7 @@ function createControllerVisual(): THREE.Group {
         new THREE.BoxGeometry(0.03, 0.03, 0.1),
         new THREE.MeshStandardMaterial({ color: 0x222222 })
     );
-    body.position.set(0, 0, -0.05);
+    body.position.set(0, 0, 0.04); // front end just past the ray origin
     group.add(body);
 
     return group;
@@ -376,11 +384,11 @@ const pointingControllers: THREE.XRTargetRaySpace[] = [];
 
 for (let i = 0; i < 2; i++) {
     const controller = renderer.xr.getController(i);
+    controller.add(createControllerVisual());
     player.add(controller);
     pointingControllers.push(controller);
 
     const grip = renderer.xr.getControllerGrip(i);
-    grip.add(createControllerVisual());
     player.add(grip);
     grip.addEventListener('connected', (event) => {
         const handedness = event.data?.handedness;
@@ -389,7 +397,14 @@ for (let i = 0; i < 2; i++) {
 }
 
 // Right controller pointing at the minimap: browse its floors, go to the pointed spot
-const minimapPointer = createMinimapPointer(pointingControllers, player, camera, feedback.notify);
+// The right controller's ray: on the minimap (browse its floors, go to the pointed spot) or, in edit mode, on the
+// edit panel (a mouse: select, click, drag the values)
+const controllerRay = createControllerRay(pointingControllers);
+const minimapPointer = createMinimapPointer(controllerRay, player, camera, feedback.notify);
+const panelPointer = createPanelPointer(controllerRay, editMode,
+    createPanelActionPress(editMode, saveMinimap, getMapContext, feedback.notify), feedback.notify,
+    () => { lastEditPanelDraw = -Infinity; });
+let vrPanelRegions: PanelRegion[] = [];
 
 // XR movement
 initXrMove(renderer.xr);
@@ -659,10 +674,12 @@ renderer.setAnimationLoop(() => {
     updateSnapTurn();
     updateMinimapZoom(timer.getDelta());
 
+    const rayReady = renderer.xr.isPresenting && controllerRay.update(player);
+    panelPointer.update(rayReady && editPanelAnchor.visible ? vrConfigPanel?.mesh ?? null : null, vrPanelRegions, 256);
     editModeInputUpdate(renderer.xr.getSession(), timer.getDelta());
 
     minimapPointer.update(vrMinimap3D, sceneMap, floorState,
-        renderer.xr.isPresenting && !editMode.active && hudMinimapVisible && !spawnPending);
+        rayReady && !editMode.active && hudMinimapVisible && !spawnPending);
 
     if (!editMode.active && sceneMap && sceneMap.levels.length > 0) {
         // while pointing at the minimap, the right trigger and stick are the pointer's
@@ -699,7 +716,7 @@ renderer.setAnimationLoop(() => {
 
     const now = performance.now();
     if (vrConfigPanel && editPanelAnchor.visible && now - lastEditPanelDraw > EDIT_PANEL_REDRAW_MS) {
-        renderConfigPanel(editMode, getMapContext(), vrConfigPanel.canvas, 256);
+        vrPanelRegions = renderConfigPanel(editMode, getMapContext(), vrConfigPanel.canvas, 256);
         vrConfigPanel.texture.needsUpdate = true;
         lastEditPanelDraw = now;
     }

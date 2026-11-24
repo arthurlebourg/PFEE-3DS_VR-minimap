@@ -42,6 +42,15 @@ export function selectNextFloor(state: FloorAdjustState, levelCount: number, dir
     state.isMoving = false;
 }
 
+/** Select a floor to reposition (the VR panel's ray): a pending move of the previous one is dropped */
+export function selectFloor(state: FloorAdjustState, floorIdx: number): void {
+    state.cancelSelected = false;
+    if (floorIdx === state.selectedFloorIdx) return;
+    state.selectedFloorIdx = floorIdx;
+    state.previewDelta = { x: 0, y: 0, z: 0 };
+    state.isMoving = false;
+}
+
 export function toggleAxisMode(state: FloorAdjustState): void {
     state.axisMode = state.axisMode === 'vertical' ? 'horizontal' : 'vertical';
 }

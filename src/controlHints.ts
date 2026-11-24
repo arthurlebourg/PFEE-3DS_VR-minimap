@@ -39,8 +39,8 @@ function leftHints(): ControlHints {
 function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext): ControlHints {
     if (!editActive) {
         return {
-            thumbstick: '↔ tourner',
-            trigger: 'Maintenir + stick ↕ : étage',
+            thumbstick: '↔ tourner · en visant la minimap ↕ : étage affiché',
+            trigger: 'Viser la minimap : y aller · maintenir + stick ↕ : étage',
             squeeze: 'Grille de debug',
             a: 'Mode édition',
         };
@@ -48,7 +48,7 @@ function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext
     if (panel === 'config') {
         return {
             thumbstick: '↕ choisir · ↔ onglet · clic : valider',
-            trigger: 'Maintenir + stick ↔ : régler',
+            trigger: 'Viser le panneau : cliquer / glisser · maintenir + stick ↔ : régler',
             squeeze: 'Grille de debug',
             a: 'Quitter l\'édition',
             b: rebuildAction === 'cancel' ? 'Arrêter le calcul'
@@ -58,7 +58,7 @@ function rightHints({ editActive, panel, rebuildAction, hasMap }: ControlContext
     }
     return {
         thumbstick: '↕ étage · ↔ onglet · clic : axe',
-        trigger: 'Maintenir + stick : déplacer',
+        trigger: 'Viser le panneau : cliquer · maintenir + stick : déplacer',
         squeeze: 'Grille de debug',
         a: 'Quitter l\'édition',
         b: 'Confirmer le déplacement',

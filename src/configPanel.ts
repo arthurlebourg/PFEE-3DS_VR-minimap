@@ -584,14 +584,38 @@ export function createVRConfigPanel(parent: THREE.Object3D, canvasSize = 256): V
 }
 
 // Draw the appropriate sub-panel (config tuning or floor repositioning) for the active tab
+/** What a spot of the VR panel does when the controller's ray clicks it */
+export type PanelTarget =
+    | { kind: 'tab'; panel: EditPanel }
+    /** slider: the param's value bar, from x0 (min) to x1 (max) */
+    | { kind: 'configRow'; index: number; slider?: { x0: number; x1: number } }
+    | { kind: 'floor'; index: number }
+    | { kind: 'cancelFloorMove' }
+    | { kind: 'axis' };
+
+/** Clickable area of the VR panel, in canvasSize units from its top left corner */
+export interface PanelRegion {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    target: PanelTarget;
+}
+
+/**
+ * Draw the appropriate sub-panel (config tuning or floor repositioning) for the active tab
+ * @return its clickable areas, for the controller's ray
+ */
 export function renderConfigPanel(
     state: EditModeState,
     map: MapContext,
     canvas: HTMLCanvasElement,
     canvasSize = 256,
-): void {
-    if (state.panel === 'config') renderConfigParamsPanel(state, map, canvas, canvasSize);
-    else renderFloorsPanel(state, map, canvas, canvasSize);
+): PanelRegion[] {
+    const regions: PanelRegion[] = [];
+    if (state.panel === 'config') renderConfigParamsPanel(state, map, canvas, canvasSize, regions);
+    else renderFloorsPanel(state, map, canvas, canvasSize, regions);
+    return regions;
 }
 
 const CATEGORY_ROW_H = 20;
@@ -636,13 +660,13 @@ function configActionButton(action: ConfigAction, state: EditModeState, map: Map
  * Draw the config-tuning panel: category headers with the params of the open one, scrolled to keep
  * the selection in view, key hints + status line at the bottom (rebuilding / dirty / up to date)
  */
-function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: HTMLCanvasElement, canvasSize: number): void {
+function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: HTMLCanvasElement, canvasSize: number, regions: PanelRegion[]): void {
     const ctx = prepareCanvas(canvas, canvasSize);
 
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-    drawPanelTabs(ctx, state.panel, canvasSize);
+    drawPanelTabs(ctx, state.panel, canvasSize, regions);
 
     // List viewport, between the title and the key hints
     const listTop = 30;
@@ -657,7 +681,11 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
     for (const h of heights) { tops.push(contentH); contentH += h; }
 
     // Keep the selected row centered when the list is taller than the viewport
-    const scroll = Math.max(0, Math.min(contentH - viewH, tops[selected] + heights[selected] / 2 - viewH / 2));
+    const maxScroll = Math.max(0, contentH - viewH);
+    const scroll = state.selectedByPointer
+        ? Math.min(state.listScroll, maxScroll)
+        : Math.max(0, Math.min(maxScroll, tops[selected] + heights[selected] / 2 - viewH / 2));
+    state.listScroll = scroll;
 
     ctx.save();
     ctx.beginPath();
@@ -668,6 +696,12 @@ function renderConfigParamsPanel(state: EditModeState, map: MapContext, canvas: 
         const y = listTop + tops[idx] - scroll;
         const h = heights[idx];
         if (y + h < listTop || y > listBottom) return;
+        // clickable within the list viewport only
+        const top = Math.max(y, listTop), bottom = Math.min(y + h, listBottom);
+        regions.push({
+            x: 6, y: top, w: canvasSize - 12, h: bottom - top,
+            target: { kind: 'configRow', index: idx, slider: row.kind === 'param' ? { x0: 20, x1: canvasSize - 12 } : undefined },
+        });
         const isSelected = idx === selected;
 
         if (isSelected && row.kind !== 'action') {
@@ -756,7 +790,7 @@ const VR_PANEL_TABS: { panel: EditPanel; label: string }[] = [
 ];
 
 /** Tab bar at the top of the VR panel: every tab, the shown one highlighted */
-function drawPanelTabs(ctx: CanvasRenderingContext2D, active: EditPanel, canvasSize: number): void {
+function drawPanelTabs(ctx: CanvasRenderingContext2D, active: EditPanel, canvasSize: number, regions: PanelRegion[]): void {
     const margin = 6, gap = 4, top = 5, height = 19;
     const width = (canvasSize - 2 * margin - gap * (VR_PANEL_TABS.length - 1)) / VR_PANEL_TABS.length;
 
@@ -764,6 +798,7 @@ function drawPanelTabs(ctx: CanvasRenderingContext2D, active: EditPanel, canvasS
     VR_PANEL_TABS.forEach(({ panel, label }, i) => {
         const x = margin + i * (width + gap);
         const isActive = panel === active;
+        regions.push({ x, y: top, w: width, h: height, target: { kind: 'tab', panel } });
         ctx.fillStyle = isActive ? '#2668a6' : '#2a2a2a';
         ctx.fillRect(x, top, width, height);
         if (isActive) {
@@ -777,13 +812,13 @@ function drawPanelTabs(ctx: CanvasRenderingContext2D, active: EditPanel, canvasS
 }
 
 // Draw the floor-repositioning panel: floor list with the active one highlighted, axis + delta info
-function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCanvasElement, canvasSize: number): void {
+function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCanvasElement, canvasSize: number, regions: PanelRegion[]): void {
     const ctx = prepareCanvas(canvas, canvasSize);
 
     ctx.fillStyle = 'rgba(10,10,10,0.92)';
     ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-    drawPanelTabs(ctx, state.panel, canvasSize);
+    drawPanelTabs(ctx, state.panel, canvasSize, regions);
 
     const rowH = 22;
     const startY = 36;
@@ -804,6 +839,7 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
         const rowFromTop = map.levels.length - 1 - idx;
         const y = startY + rowFromTop * rowH;
         const isSelected = idx === state.floors.selectedFloorIdx;
+        regions.push({ x: 8, y: y - 4, w: canvasSize - 16, h: rowH - 4, target: { kind: 'floor', index: idx } });
 
         // with the cancel button selected, the floor stays the one being moved: no selection fill
         if (isSelected && !state.floors.cancelSelected) {
@@ -823,10 +859,13 @@ function renderFloorsPanel(state: EditModeState, map: MapContext, canvas: HTMLCa
     const cancelH = 26;
     const pending = hasPendingPreview(state.floors);
     const cancelDone = isActionFlashing(state, 'cancelFloorMove');
-    drawPanelButton(ctx, cancelDone ? 'Déplacement annulé ✓' : 'Annuler le déplacement', startY + map.levels.length * rowH - 4, cancelH, canvasSize,
+    const cancelY = startY + map.levels.length * rowH - 4;
+    regions.push({ x: 12, y: cancelY + 4, w: canvasSize - 24, h: cancelH - 6, target: { kind: 'cancelFloorMove' } });
+    drawPanelButton(ctx, cancelDone ? 'Déplacement annulé ✓' : 'Annuler le déplacement', cancelY, cancelH, canvasSize,
         { enabled: pending, selected: state.floors.cancelSelected, done: cancelDone });
 
     const infoY = startY + map.levels.length * rowH + cancelH + 10;
+    regions.push({ x: 8, y: infoY - 14, w: canvasSize - 16, h: 20, target: { kind: 'axis' } });
 
     ctx.textAlign = 'center';
     ctx.fillStyle = '#55ddff';

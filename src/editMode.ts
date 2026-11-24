@@ -78,6 +78,9 @@ export type EditPanel = 'config' | 'floors' | 'minimap3d';
  * @prop panel which sub-panel is currently shown/controlled: config tuning or floor repositioning
  * @prop openCategory expanded section of the config list (null = all collapsed)
  * @prop selectedRow index into getConfigRows() currently highlighted (VR navigation)
+ * @prop selectedByPointer the selection follows the controller's ray: the VR list keeps its scroll (centring the
+ *                         selection would move the rows under the ray). The stick centres it
+ * @prop listScroll VR config list's scroll, kept by its drawing
  * @prop config live MinimapConfig, mutated in place by the panels
  * @prop defaults original MinimapConfig, used by resetToDefaults
  * @prop isRebuilding a rebuild is in progress (it runs in the background, the config stays editable)
@@ -92,6 +95,8 @@ export interface EditModeState {
     panel: EditPanel;
     openCategory: ParamCategory | null;
     selectedRow: number;
+    selectedByPointer: boolean;
+    listScroll: number;
     config: MinimapConfig;
     defaults: MinimapConfig;
     isRebuilding: boolean;
@@ -112,6 +117,8 @@ export function createEditMode(defaults: MinimapConfig, initialConfig: MinimapCo
         panel: 'config',
         openCategory: null,
         selectedRow: 0,
+        selectedByPointer: false,
+        listScroll: 0,
         config: { ...initialConfig },
         defaults: { ...defaults },
         isRebuilding: false,
@@ -188,6 +195,15 @@ export function toggleCategory(state: EditModeState, category: ParamCategory): v
     setCategoryOpen(state, category, state.openCategory !== category);
 }
 
+/** Set a param from a slider: snapped to its step, within its range */
+export function setParamValue(state: EditModeState, param: EditableParam, value: number): void {
+    const snapped = param.min + Math.round((value - param.min) / param.step) * param.step;
+    const next = Math.min(param.max, Math.max(param.min, snapped));
+    if (next === state.config[param.key]) return;
+    state.config[param.key] = next;
+    state.isDirty = true;
+}
+
 export function adjustParam(state: EditModeState, param: EditableParam, delta: number): void {
     const next = state.config[param.key] + delta;
     state.config[param.key] = Math.min(param.max, Math.max(param.min, next));
@@ -214,45 +230,16 @@ function pressedEdge(gp: Gamepad, buttonIdx: number, prev: boolean): [fired: boo
 }
 
 /**
- * Controller input for the edit mode, all on the right hand (the left one is for the minimap and moving).
- *  A button             : toggles edit mode on/off (any panel)
- *  stick left/right     : switch tab (config <-> floors), without the trigger
- *  Panel = 'config':
- *    - stick up/down (no trigger)      : move the selection (category headers + params of the open one + buttons)
- *    - stick click                     : open/close the selected category (or the selected param's one),
- *                                        or press the selected button (reset to defaults, save the map to a file)
- *    - stick left/right + trigger held : adjust the selected param's value, or open (→) / close (←) a selected category
- *    - B button                        : rebuild the minimap (raycast), see getRebuildAction
- *  Panel = 'floors':
- *    - stick up/down (no trigger) : select the floor to reposition, or the cancel button under the floors
- *    - stick click                : toggle axis mode (vertical Y <-> horizontal X/Z), or press the cancel button
- *    - trigger + stick            : nudge the selected floor along the active axis (preview only)
- *    - B button                   : confirm bake the preview offset into the map data
- *
- * @param state edit mode state to mutate
- * @param onRebuildConfig called on right B press while panel = 'config'
- * @param onSaveMap called when the save button of the config panel is pressed, with a map to save
- * @param onConfirmFloorMove called on right B press while panel = 'floors'
- * @param getMapContext returns the current floor count + grid size, needed for floor selection/nudging
- * @param notify feedback (vibration, message) of what the input did
- * @return update function to call every frame with the current session + deltaTime
+ * What pressing a VR panel button does (with the stick or the controller's ray): reset the config, save the map,
+ * cancel the floor move. Feedback in the right hand, the button shows its "done" state
  */
-export function createEditModeInputHandler(
+export function createPanelActionPress(
     state: EditModeState,
-    onRebuildConfig: () => void,
     onSaveMap: () => void,
-    onConfirmFloorMove: () => void,
     getMapContext: () => MapContext,
-    notify: Notify = noFeedback,
-): (session: XRSession | null, deltaTime: number) => void {
-    let prevToggle = false;
-    let prevRightB = false;
-    let prevRightStickClick = false;
-    let tabSwitchArmed = true;
-    let lastSelectAt = 0;
-    let lastHorizStepAt = 0;
-
-    function press(action: PanelAction, now: number): void {
+    notify: Notify,
+): (action: PanelAction) => void {
+    return (action) => {
         switch (action) {
             case 'reset':
                 resetToDefaults(state);
@@ -275,8 +262,51 @@ export function createEditModeInputHandler(
                 notify('right', 'done', 'Déplacement annulé');
                 break;
         }
-        state.actionFlash = { action, at: now };
-    }
+        state.actionFlash = { action, at: performance.now() };
+    };
+}
+
+/**
+ * Controller input for the edit mode, all on the right hand (the left one is for the minimap and moving).
+ *  A button             : toggles edit mode on/off (any panel)
+ *  stick left/right     : switch tab (config <-> floors), without the trigger
+ *  Panel = 'config':
+ *    - stick up/down (no trigger)      : move the selection (category headers + params of the open one + buttons)
+ *    - stick click                     : open/close the selected category (or the selected param's one),
+ *                                        or press the selected button (reset to defaults, save the map to a file)
+ *    - stick left/right + trigger held : adjust the selected param's value, or open (→) / close (←) a selected category
+ *    - B button                        : rebuild the minimap (raycast), see getRebuildAction
+ *  Panel = 'floors':
+ *    - stick up/down (no trigger) : select the floor to reposition, or the cancel button under the floors
+ *    - stick click                : toggle axis mode (vertical Y <-> horizontal X/Z), or press the cancel button
+ *    - trigger + stick            : nudge the selected floor along the active axis (preview only)
+ *    - B button                   : confirm bake the preview offset into the map data
+ *
+ * @param state edit mode state to mutate
+ * @param onRebuildConfig called on right B press while panel = 'config'
+ * @param onSaveMap called when the save button of the config panel is pressed, with a map to save
+ * @param onConfirmFloorMove called on right B press while panel = 'floors'
+ * @param getMapContext returns the current floor count + grid size, needed for floor selection/nudging
+ * @param notify feedback (vibration, message) of what the input did
+ * @param pointerHasTrigger the controller's ray is using the trigger (pointing at the panel): trigger + stick do nothing
+ * @return update function to call every frame with the current session + deltaTime
+ */
+export function createEditModeInputHandler(
+    state: EditModeState,
+    onRebuildConfig: () => void,
+    onSaveMap: () => void,
+    onConfirmFloorMove: () => void,
+    getMapContext: () => MapContext,
+    notify: Notify = noFeedback,
+    pointerHasTrigger: () => boolean = () => false,
+): (session: XRSession | null, deltaTime: number) => void {
+    let prevToggle = false;
+    let prevRightB = false;
+    let prevRightStickClick = false;
+    let tabSwitchArmed = true;
+    let lastSelectAt = 0;
+    let lastHorizStepAt = 0;
+    const press = createPanelActionPress(state, onSaveMap, getMapContext, notify);
 
     return (session, deltaTime) => {
         if (!session) return;
@@ -300,7 +330,7 @@ export function createEditModeInputHandler(
 
         const stickX = rightGp.axes[2] ?? 0;
         const stickY = rightGp.axes[3] ?? 0;
-        const triggerHeld = (rightGp.buttons[0]?.value ?? 0) > 0.5;
+        const triggerHeld = !pointerHasTrigger() && (rightGp.buttons[0]?.value ?? 0) > 0.5;
         const now = performance.now();
         // A diagonal push counts for its main direction only: switching tab while scrolling the list would be a surprise
         const horizontal = Math.abs(stickX) > Math.abs(stickY);
@@ -328,7 +358,7 @@ export function createEditModeInputHandler(
             const [stickClick, stickClickHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
             if (stickClick) {
                 if (row.kind === 'action') {
-                    press(row.action, now);
+                    press(row.action);
                 } else {
                     toggleCategory(state, row.kind === 'category' ? row.category : row.param.category);
                     notify('right', 'tick');
@@ -338,6 +368,7 @@ export function createEditModeInputHandler(
 
             if (selecting) {
                 selectNextRow(state, stickY > 0 ? 1 : -1);
+                state.selectedByPointer = false;
                 notify('right', 'tick');
                 lastSelectAt = now;
             }
@@ -360,7 +391,7 @@ export function createEditModeInputHandler(
             const [stickClick, stickClickHeld] = pressedEdge(rightGp, 3, prevRightStickClick);
             if (stickClick) {
                 if (floors.cancelSelected) {
-                    press('cancelFloorMove', now);
+                    press('cancelFloorMove');
                 } else {
                     toggleAxisMode(floors);
                     notify('right', 'tick', floors.axisMode === 'vertical' ? 'Axe : vertical' : 'Axe : horizontal');
